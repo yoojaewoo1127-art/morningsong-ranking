@@ -1,17 +1,16 @@
 import streamlit as st
 import requests
 import pandas as pd
-import numpy as np
 import json
 
 # 1. 페이지 기본 설정
 st.set_page_config(
-    page_title="SSHS 기상곡 리더보드 & 개인 기록실",
+    page_title="SSHS 기상곡 명예의 전당 & 개인 기록실",
     page_icon="🎵",
     layout="wide"
 )
 
-# 2. 커스텀 CSS
+# 2. 커스텀 CSS (스크롤바 및 카드 스타일)
 st.markdown("""
 <style>
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
@@ -43,22 +42,27 @@ st.markdown("""
     .ranking-card {
         background: #ffffff;
         border-radius: 14px;
-        padding: 18px 16px 14px 16px;
+        padding: 18px 14px 14px 14px;
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.04);
         border: 1px solid #e2e8f0;
         margin-bottom: 16px;
+        display: flex;
+        flex-direction: column;
     }
 
     .card-title {
-        font-size: 15px;
+        font-size: 14px;
         font-weight: 700;
         color: #334155;
         margin-bottom: 12px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
 
     .hero-section {
         text-align: center;
-        padding-bottom: 14px;
+        padding-bottom: 12px;
         border-bottom: 1px solid #f1f5f9;
         position: relative;
     }
@@ -66,13 +70,13 @@ st.markdown("""
     .gold-badge {
         position: absolute;
         top: 0px;
-        left: 8px;
+        left: 4px;
         background: linear-gradient(135deg, #f59e0b, #d97706);
         color: #ffffff;
-        width: 26px;
-        height: 26px;
+        width: 24px;
+        height: 24px;
         border-radius: 50%;
-        font-size: 13px;
+        font-size: 12px;
         font-weight: 800;
         display: flex;
         align-items: center;
@@ -81,8 +85,8 @@ st.markdown("""
     }
 
     .hero-avatar {
-        width: 72px;
-        height: 72px;
+        width: 68px;
+        height: 68px;
         border-radius: 50%;
         object-fit: cover;
         border: 3px solid #f8fafc;
@@ -107,11 +111,24 @@ st.markdown("""
         color: #ef4444;
     }
 
+    /* 2위 이하 리스트 (스크롤바 적용) */
     .sub-list {
-        margin-top: 10px;
+        margin-top: 8px;
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        gap: 6px;
+        max-height: 210px;
+        overflow-y: auto;
+        padding-right: 4px;
+    }
+
+    /* 스크롤바 미세 디자인 */
+    .sub-list::-webkit-scrollbar {
+        width: 4px;
+    }
+    .sub-list::-webkit-scrollbar-thumb {
+        background: #cbd5e1;
+        border-radius: 4px;
     }
 
     .sub-item {
@@ -124,12 +141,12 @@ st.markdown("""
     .sub-left {
         display: flex;
         align-items: center;
-        gap: 10px;
+        gap: 8px;
         overflow: hidden;
     }
 
     .sub-rank {
-        font-size: 13px;
+        font-size: 12.5px;
         font-weight: 700;
         color: #94a3b8;
         width: 14px;
@@ -137,8 +154,8 @@ st.markdown("""
     }
 
     .sub-avatar {
-        width: 32px;
-        height: 32px;
+        width: 28px;
+        height: 28px;
         border-radius: 50%;
         object-fit: cover;
         border: 1px solid #e2e8f0;
@@ -146,17 +163,17 @@ st.markdown("""
     }
 
     .sub-name {
-        font-size: 13px;
+        font-size: 12.5px;
         font-weight: 600;
         color: #334155;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        max-width: 95px;
+        max-width: 80px;
     }
 
     .sub-score {
-        font-size: 13px;
+        font-size: 12.5px;
         font-weight: 700;
         color: #1e293b;
         flex-shrink: 0;
@@ -169,7 +186,7 @@ st.markdown("""
         margin: 24px 0 12px 0;
     }
 
-    /* 🔍 선수 상세 기록 카드 UI */
+    /* 선수 상세 기록 카드 UI */
     .player-card {
         background: #ffffff;
         border-radius: 16px;
@@ -362,20 +379,18 @@ for pid, group in grouped:
 
 df_base_stat = pd.DataFrame(stat_records)
 
-# 6. Z-Score 기반 WAR 산출 (야구식 0.00 기준)
+# 6. Z-Score 기반 종합 기여도 점수 산출
 def calc_z(series):
     std = series.std(ddof=0)
     return (series - series.mean()) / std if std > 0 else series * 0
 
-# 규정 충족자 기반 표준점수 산출
 df_base_stat['z_app'] = calc_z(df_base_stat['approved_cnt'])
 df_base_stat['z_net'] = calc_z(df_base_stat['total_net'])
 df_base_stat['z_first'] = calc_z(df_base_stat['first_cnt'])
 df_base_stat['z_avg_net'] = calc_z(df_base_stat['avg_net'])
 df_base_stat['z_last'] = calc_z(df_base_stat['last_cnt'])
 
-# WAR 가중 합산
-df_base_stat['war'] = (
+df_base_stat['score'] = (
     0.35 * df_base_stat['z_app'] +
     0.30 * df_base_stat['z_net'] +
     0.20 * df_base_stat['z_first'] +
@@ -384,7 +399,7 @@ df_base_stat['war'] = (
 ).round(2)
 
 # 7. 상단 랭킹 데이터 집계
-war_rank_df = df_base_stat[df_base_stat['is_qualified'] == 1].sort_values(by='war', ascending=False).reset_index(drop=True)
+score_rank_df = df_base_stat[df_base_stat['is_qualified'] == 1].sort_values(by='score', ascending=False).reset_index(drop=True)
 likes_df = df_songs.groupby('proposer')['agree'].sum().reset_index().sort_values(by='agree', ascending=False).reset_index(drop=True)
 net_high_df = df_songs.groupby('proposer')['net_votes'].sum().reset_index().sort_values(by='net_votes', ascending=False).reset_index(drop=True)
 app_df = df_songs[df_songs['approved'] == True].groupby('proposer').size().reset_index(name='app_cnt').sort_values(by='app_cnt', ascending=False).reset_index(drop=True)
@@ -393,7 +408,7 @@ dislikes_df = df_songs.groupby('proposer')['disagree'].sum().reset_index().sort_
 net_low_df = df_songs.groupby('proposer')['net_votes'].sum().reset_index().sort_values(by='net_votes', ascending=True).reset_index(drop=True)
 rej_df = df_songs[df_songs['approved'] == False].groupby('proposer').size().reset_index(name='rej_cnt').sort_values(by='rej_cnt', ascending=False).reset_index(drop=True)
 
-# 8. 상단 카드 렌더링 함수
+# 8. 상단 카드 렌더링 함수 (스크롤 지원: 최대 15위까지 렌더링)
 def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
     if df_rank.empty:
         st.markdown(f"<div class='ranking-card'><div class='card-title'>{title}</div><p style='color:#94a3b8;'>기록 없음</p></div>", unsafe_allow_html=True)
@@ -403,45 +418,50 @@ def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
     top1_info = get_user(top1['proposer'])
     top1_val = top1[val_col]
     
-    if unit == "점" or unit == "WAR":
-        top1_val_str = f"+{top1_val:.2f}" if (unit == "WAR" and top1_val > 0) else (f"+{top1_val}" if top1_val > 0 else f"{top1_val}")
+    if unit == "점":
+        top1_val_str = f"+{top1_val}" if top1_val > 0 else f"{top1_val}"
+    elif unit == "":
+        top1_val_str = f"+{top1_val:.2f}" if top1_val > 0 else f"{top1_val:.2f}"
     else:
         top1_val_str = f"{top1_val}"
         
     score_cls = "hero-score danger" if is_danger else "hero-score"
 
+    # 2위부터 최대 15위까지 스크롤 리스트에 포함
     sub_items_html = ""
-    for rank_num, row in enumerate(df_rank.iloc[1:5].itertuples(), start=2):
+    for rank_num, row in enumerate(df_rank.iloc[1:15].itertuples(), start=2):
         u_info = get_user(getattr(row, 'proposer'))
         val = getattr(row, val_col)
-        if unit == "WAR":
+        
+        if unit == "":
             val_str = f"+{val:.2f}" if val > 0 else f"{val:.2f}"
         elif unit == "점" and val > 0:
             val_str = f"+{val}"
         else:
             val_str = f"{val}"
             
-        sub_items_html += f"<div class='sub-item'><div class='sub-left'><span class='sub-rank'>{rank_num}</span><img class='sub-avatar' src='{u_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/><span class='sub-name' title='{u_info['name']}'>{u_info['name']}</span></div><span class='sub-score'>{val_str}{unit if unit != 'WAR' else ''}</span></div>"
+        sub_items_html += f"<div class='sub-item'><div class='sub-left'><span class='sub-rank'>{rank_num}</span><img class='sub-avatar' src='{u_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/><span class='sub-name' title='{u_info['name']}'>{u_info['name']}</span></div><span class='sub-score'>{val_str}{unit}</span></div>"
 
-    card_html = f"<div class='ranking-card'><div class='card-title'>{title}</div><div class='hero-section'><div class='gold-badge'>1</div><img class='hero-avatar' src='{top1_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/><div class='hero-name'>{top1_info['name']}</div><div class='{score_cls}'>{top1_val_str}{(' ' + unit) if unit != '점' else unit}</div></div><div class='sub-list'>{sub_items_html}</div></div>"
+    card_html = f"<div class='ranking-card'><div class='card-title'>{title}</div><div class='hero-section'><div class='gold-badge'>1</div><img class='hero-avatar' src='{top1_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/><div class='hero-name'>{top1_info['name']}</div><div class='{score_cls}'>{top1_val_str}{unit}</div></div><div class='sub-list'>{sub_items_html}</div></div>"
     st.markdown(card_html, unsafe_allow_html=True)
 
 # 9. 상단 UI 렌더링
 st.markdown("""
 <div class="main-title">
     <h1>🏆 SSHS 기상곡 명예의 전당</h1>
-    <p>실시간 부문별 리더보드 & 야구식 종합 기여도(WAR) 통계</p>
+    <p>실시간 부문별 리더보드 & 전교생 개인 기록실</p>
 </div>
 """, unsafe_allow_html=True)
 
 tab_honor, tab_dishonor = st.tabs(["🏅 명예 기록", "💀 불명예 기록"])
 
 with tab_honor:
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: render_leaderboard_card("👑 종합 기여도 (WAR)", war_rank_df, 'war', 'WAR')
+    c1, c2, c3, c4, c5 = st.columns(5)
+    with c1: render_leaderboard_card("👑 종합 기여도", score_rank_df, 'score', '')
     with c2: render_leaderboard_card("🔥 최고 순합산 (Net)", net_high_df, 'net_votes', '점')
     with c3: render_leaderboard_card("🎉 최다 곡 승인", app_df, 'app_cnt', '곡')
-    with c4: render_leaderboard_card("❤️ 최다 좋아요", likes_df, 'agree', '개')
+    with c4: render_leaderboard_card("🥇 주별 1위 최다", first_cnt_df, 'first_cnt', '회')
+    with c5: render_leaderboard_card("❤️ 최다 좋아요", likes_df, 'agree', '개')
 
 with tab_dishonor:
     d1, d2, d3, d4 = st.columns(4)
@@ -488,7 +508,7 @@ if selected_label != "선택 안 함":
     p_avg_net = round(float(target_songs['net_votes'].mean()), 2)
     p_avg_agree = round(float(target_songs['agree'].mean()), 2)
     p_avg_disagree = round(float(target_songs['disagree'].mean()), 2)
-    p_war = user_row['war']
+    p_score = user_row['score']
     
     def get_rank_str(df_rank, val_col):
         res = df_rank[df_rank['proposer'] == target_pid]
@@ -497,12 +517,12 @@ if selected_label != "선택 안 함":
             return f"<b>{r}위</b>"
         return "순위 밖"
 
-    r_war = get_rank_str(war_rank_df, 'war')
+    r_score = get_rank_str(score_rank_df, 'score')
     r_net = get_rank_str(net_high_df, 'net_votes')
     r_agree = get_rank_str(likes_df, 'agree')
     r_app = get_rank_str(app_df, 'app_cnt')
 
-    war_display_str = f"+{p_war:.2f}" if p_war > 0 else f"{p_war:.2f}"
+    score_display_str = f"+{p_score:.2f}" if p_score > 0 else f"{p_score:.2f}"
 
     st.markdown(f"""
     <div class="player-card">
@@ -515,15 +535,15 @@ if selected_label != "선택 안 함":
         </div>
         <div class="ranking-badge-bar">
             <span>🏆 <b>시즌 랭킹</b></span>
-            <span class="badge-bar-item">종합 WAR {r_war}</span> ·
+            <span class="badge-bar-item">종합 점수 {r_score}</span> ·
             <span class="badge-bar-item">순합산 {r_net}</span> ·
             <span class="badge-bar-item">좋아요 {r_agree}</span> ·
             <span class="badge-bar-item">선정 곡수 {r_app}</span>
         </div>
         <div class="stats-grid">
             <div class="stats-cell">
-                <div class="stats-cell-label">종합 기여도 (WAR)</div>
-                <div class="stats-cell-val highlight">{war_display_str}</div>
+                <div class="stats-cell-label">종합 기여도 점수</div>
+                <div class="stats-cell-val highlight">{score_display_str}</div>
             </div>
             <div class="stats-cell">
                 <div class="stats-cell-label">순합산 (Net)</div>
@@ -568,7 +588,7 @@ if selected_label != "선택 안 함":
     st.line_chart(chart_data)
 
 # -------------------------------------------------------------
-# 11. 📊 전교생 종합 기록실 (WAR 포함 인터랙티브 테이블)
+# 11. 📊 전교생 종합 기록실 (클릭 시 정렬 테이블)
 # -------------------------------------------------------------
 st.markdown("<div class='section-header'>📋 전교생 종합 통계 기록실 <span style='font-size: 13px; font-weight: normal; color: #64748b;'>(※ 규정: 신청 곡 수 4개 이상만 상단 순위 진입, 미달 시 하단 '-')</span></div>", unsafe_allow_html=True)
 
@@ -684,7 +704,7 @@ html_table_component = f"""
                 <th style="cursor: default; text-align: center;">순위</th>
                 <th onclick="sortTable('name')" style="text-align: left;">선수/이름 <span class="sort-arrow" id="arrow-name">▲</span></th>
                 <th onclick="sortTable('student_id')">교번 <span class="sort-arrow" id="arrow-student_id">▲</span></th>
-                <th onclick="sortTable('war')" class="active">WAR <span class="sort-arrow desc" id="arrow-war">▲</span></th>
+                <th onclick="sortTable('score')" class="active">종합 점수 <span class="sort-arrow desc" id="arrow-score">▲</span></th>
                 <th onclick="sortTable('total_net')">순합산(Net) <span class="sort-arrow" id="arrow-total_net">▲</span></th>
                 <th onclick="sortTable('total_songs')">곡 등록수 <span class="sort-arrow" id="arrow-total_songs">▲</span></th>
                 <th onclick="sortTable('approved_cnt')">선정수 <span class="sort-arrow" id="arrow-approved_cnt">▲</span></th>
@@ -704,7 +724,7 @@ html_table_component = f"""
 
 <script>
     let rawData = {table_data_json};
-    let currentKey = 'war';
+    let currentKey = 'score';
     let isAsc = false;
 
     function renderTable(sortedData) {{
@@ -724,7 +744,7 @@ html_table_component = f"""
                 rankCounter++;
             }}
 
-            let warFormatted = row.war > 0 ? '+' + row.war.toFixed(2) : row.war.toFixed(2);
+            let scoreFormatted = row.score > 0 ? '+' + row.score.toFixed(2) : row.score.toFixed(2);
 
             tr.innerHTML = `
                 <td class="${{rankClass}}">${{rankDisplay}}</td>
@@ -735,7 +755,7 @@ html_table_component = f"""
                     </div>
                 </td>
                 <td>${{row.student_id}}</td>
-                <td class="highlight-cell">${{warFormatted}}</td>
+                <td class="highlight-cell">${{scoreFormatted}}</td>
                 <td>${{row.total_net > 0 ? '+' + row.total_net : row.total_net}}</td>
                 <td>${{row.total_songs}}</td>
                 <td>${{row.approved_cnt}}</td>
@@ -800,8 +820,8 @@ html_table_component = f"""
         renderTable(sortedData);
     }}
 
-    // 초기 정렬: WAR 내림차순
-    const initialData = doSort('war', false);
+    // 초기 정렬: 종합 점수 내림차순
+    const initialData = doSort('score', false);
     renderTable(initialData);
 </script>
 </body>
