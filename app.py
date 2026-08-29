@@ -10,7 +10,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# 2. 커스텀 CSS (네이버 스포츠 선수 상세 기록 스타일 포함)
+# 2. 커스텀 CSS
 st.markdown("""
 <style>
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
@@ -207,7 +207,6 @@ st.markdown("""
         color: #64748b;
     }
 
-    /* 상단 검은색 랭킹 바 */
     .ranking-badge-bar {
         background: #0f172a;
         color: #ffffff;
@@ -231,7 +230,6 @@ st.markdown("""
         color: #fbbf24;
     }
 
-    /* 8칸 기록 그리드 */
     .stats-grid {
         display: grid;
         grid-template-columns: repeat(4, 1fr);
@@ -268,7 +266,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 3. 데이터 로딩 및 전처리
+# 3. 데이터 로딩 및 전처리 (23학번 졸업생 필터링)
 @st.cache_data(ttl=300)
 def load_data():
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -282,12 +280,21 @@ def load_data():
     for u in users:
         sid = u.get("student_id")
         if sid:
-            raw_name = u.get("name", str(sid))
+            sid_str = str(sid).strip()
+            # 23학번 졸업생 제외
+            if sid_str.startswith("23"):
+                continue
+            
+            raw_name = u.get("name", sid_str)
             clean_name = raw_name.split(" ")[-1] if " " in raw_name else raw_name
             pfp = u.get("pfp_url") if u.get("pfp_url") else default_pfp
             user_meta[int(sid)] = {"name": clean_name, "full_name": raw_name, "pfp": pfp}
             
     df_songs['proposer'] = pd.to_numeric(df_songs['proposer'], errors='coerce')
+    
+    # 23학번 졸업생 곡 제외
+    df_songs = df_songs[~df_songs['proposer'].astype(str).str.startswith("23")].copy()
+    
     df_songs['agree'] = pd.to_numeric(df_songs['agree'], errors='coerce').fillna(0).astype(int)
     df_songs['disagree'] = pd.to_numeric(df_songs['disagree'], errors='coerce').fillna(0).astype(int)
     df_songs['net_votes'] = df_songs['agree'] - df_songs['disagree']
@@ -305,7 +312,7 @@ def get_user(pid):
         return {"name": "알 수 없음", "full_name": "알 수 없음", "pfp": default_pfp}
     return user_meta.get(int(pid), {"name": f"학생({int(pid)})", "full_name": f"학생({int(pid)})", "pfp": default_pfp})
 
-# 4. 상단 카드 렌더링 함수
+# 4. 상단 리더보드 카드 렌더링
 def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
     if df_rank.empty:
         st.markdown(f"<div class='ranking-card'><div class='card-title'>{title}</div><p style='color:#94a3b8;'>기록 없음</p></div>", unsafe_allow_html=True)
@@ -327,7 +334,7 @@ def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
     card_html = f"<div class='ranking-card'><div class='card-title'>{title}</div><div class='hero-section'><div class='gold-badge'>1</div><img class='hero-avatar' src='{top1_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/><div class='hero-name'>{top1_info['name']}</div><div class='{score_cls}'>{top1_val_str}{unit}</div></div><div class='sub-list'>{sub_items_html}</div></div>"
     st.markdown(card_html, unsafe_allow_html=True)
 
-# 5. 순위 계산용 데이터 집계
+# 5. 상단 랭킹 데이터 집계
 likes_df = df_songs.groupby('proposer')['agree'].sum().reset_index().sort_values(by='agree', ascending=False).reset_index(drop=True)
 net_high_df = df_songs.groupby('proposer')['net_votes'].sum().reset_index().sort_values(by='net_votes', ascending=False).reset_index(drop=True)
 app_df = df_songs[df_songs['approved'] == True].groupby('proposer').size().reset_index(name='app_cnt').sort_values(by='app_cnt', ascending=False).reset_index(drop=True)
@@ -347,7 +354,7 @@ rej_df = df_songs[df_songs['approved'] == False].groupby('proposer').size().rese
 st.markdown("""
 <div class="main-title">
     <h1>🏆 SSHS 기상곡 명예의 전당</h1>
-    <p>실시간 부문별 리더보드 & 전교생 통계 차트</p>
+    <p>실시간 부문별 리더보드 & 전교생 통계 차트 (재학생 전용)</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -372,7 +379,6 @@ with tab_dishonor:
 # -------------------------------------------------------------
 st.markdown("<div class='section-header'>🔍 학생 개인별 상세 기록 조회</div>", unsafe_allow_html=True)
 
-# 검색용 학생 리스트 구성 (곡을 1번이라도 올린 학생 기준)
 all_proposers = df_songs['proposer'].dropna().unique().astype(int)
 user_options = []
 user_id_map = {}
@@ -385,7 +391,6 @@ for pid in all_proposers:
 
 user_options.sort()
 
-# 검색 및 선택 UI
 selected_label = st.selectbox(
     "이름 또는 교번을 검색하세요:",
     options=["선택 안 함"] + user_options,
@@ -397,7 +402,6 @@ if selected_label != "선택 안 함":
     target_u = get_user(target_pid)
     target_songs = df_songs[df_songs['proposer'] == target_pid].copy()
     
-    # 개인 지표 계산
     p_total_songs = len(target_songs)
     p_approved = int((target_songs['approved'] == True).sum())
     p_rate = round((p_approved / p_total_songs) * 100, 1)
@@ -408,7 +412,6 @@ if selected_label != "선택 안 함":
     p_avg_agree = round(float(target_songs['agree'].mean()), 2)
     p_avg_disagree = round(float(target_songs['disagree'].mean()), 2)
     
-    # 순위 계산 함수
     def get_rank_str(df_rank, val_col):
         res = df_rank[df_rank['proposer'] == target_pid]
         if not res.empty:
@@ -421,7 +424,6 @@ if selected_label != "선택 안 함":
     r_app = get_rank_str(app_df, 'app_cnt')
     r_first = get_rank_str(first_cnt_df, 'first_cnt')
 
-    # 선수 상세 카드 렌더링
     st.markdown(f"""
     <div class="player-card">
         <div class="player-header">
@@ -475,7 +477,6 @@ if selected_label != "선택 안 함":
     </div>
     """, unsafe_allow_html=True)
 
-    # 신청 곡들의 주차별 득표 추이 그래프
     target_songs['주차'] = target_songs['year'].astype(str) + "년 " + target_songs['week'].astype(str) + "주"
     chart_data = target_songs[['주차', 'net_votes', 'agree', 'disagree']].rename(columns={
         'net_votes': '순합산(Net)',
@@ -487,9 +488,9 @@ if selected_label != "선택 안 함":
     st.line_chart(chart_data)
 
 # -------------------------------------------------------------
-# 8. 📊 전교생 종합 기록실 (클릭 시 세모 회전 인터랙티브 테이블)
+# 8. 📊 전교생 종합 기록실 (규정 4곡 미달 시 순위 '-' 처리)
 # -------------------------------------------------------------
-st.markdown("<div class='section-header'>📋 전교생 종합 통계 기록실</div>", unsafe_allow_html=True)
+st.markdown("<div class='section-header'>📋 전교생 종합 통계 기록실 <span style='font-size: 13px; font-weight: normal; color: #64748b;'>(※ 규정: 신청 곡 수 4개 이상만 순위 부여, 미달 시 '-')</span></div>", unsafe_allow_html=True)
 
 first_map = first_cnt_df.set_index('proposer')['first_cnt'].to_dict()
 last_map = last_cnt_df.set_index('proposer')['last_cnt'].to_dict()
@@ -505,7 +506,7 @@ for pid, group in grouped:
     total_net = int(group['net_votes'].sum())
     
     avg_agree = round(float(group['agree'].mean()), 2)
-    avg_disagree = round(float(group['agree'].mean()), 2)
+    avg_disagree = round(float(group['disagree'].mean()), 2)
     avg_net = round(float(group['net_votes'].mean()), 2)
     
     approved_count = int((group['approved'] == True).sum())
@@ -607,6 +608,10 @@ html_table_component = f"""
         color: #94a3b8;
         width: 45px;
     }}
+    .col-rank.unqualified {{
+        color: #cbd5e1;
+        font-size: 15px;
+    }}
     .col-user {{
         text-align: left;
         display: flex;
@@ -665,10 +670,22 @@ html_table_component = f"""
         const tbody = document.getElementById('tableBody');
         tbody.innerHTML = '';
         
-        data.forEach((row, idx) => {{
+        let rankCounter = 1;
+
+        data.forEach((row) => {{
             const tr = document.createElement('tr');
+            
+            // 규정 이닝 룰: 곡 수가 4개 미만이면 순위는 '-'
+            let rankDisplay = "-";
+            let rankClass = "col-rank unqualified";
+            if (row.total_songs >= 4) {{
+                rankDisplay = rankCounter;
+                rankClass = "col-rank";
+                rankCounter++;
+            }}
+
             tr.innerHTML = `
-                <td class="col-rank">${{idx + 1}}</td>
+                <td class="${{rankClass}}">${{rankDisplay}}</td>
                 <td>
                     <div class="col-user">
                         <img class="avatar" src="${{row.pfp}}" onerror="this.src='{default_pfp}'"/>
