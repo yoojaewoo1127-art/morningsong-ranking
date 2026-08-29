@@ -281,7 +281,6 @@ def load_data():
         sid = u.get("student_id")
         if sid:
             sid_str = str(sid).strip()
-            # 23학번 졸업생 제외
             if sid_str.startswith("23"):
                 continue
             
@@ -291,8 +290,6 @@ def load_data():
             user_meta[int(sid)] = {"name": clean_name, "full_name": raw_name, "pfp": pfp}
             
     df_songs['proposer'] = pd.to_numeric(df_songs['proposer'], errors='coerce')
-    
-    # 23학번 졸업생 곡 제외
     df_songs = df_songs[~df_songs['proposer'].astype(str).str.startswith("23")].copy()
     
     df_songs['agree'] = pd.to_numeric(df_songs['agree'], errors='coerce').fillna(0).astype(int)
@@ -488,9 +485,9 @@ if selected_label != "선택 안 함":
     st.line_chart(chart_data)
 
 # -------------------------------------------------------------
-# 8. 📊 전교생 종합 기록실 (규정 4곡 미달 시 순위 '-' 처리)
+# 8. 📊 전교생 종합 기록실 (규정 충족자 우선 정렬 & 미달자 하단 배치)
 # -------------------------------------------------------------
-st.markdown("<div class='section-header'>📋 전교생 종합 통계 기록실 <span style='font-size: 13px; font-weight: normal; color: #64748b;'>(※ 규정: 신청 곡 수 4개 이상만 순위 부여, 미달 시 '-')</span></div>", unsafe_allow_html=True)
+st.markdown("<div class='section-header'>📋 전교생 종합 통계 기록실 <span style='font-size: 13px; font-weight: normal; color: #64748b;'>(※ 규정: 신청 곡 수 4개 이상만 상단 순위 진입, 미달 시 하단 '-')</span></div>", unsafe_allow_html=True)
 
 first_map = first_cnt_df.set_index('proposer')['first_cnt'].to_dict()
 last_map = last_cnt_df.set_index('proposer')['last_cnt'].to_dict()
@@ -506,7 +503,7 @@ for pid, group in grouped:
     total_net = int(group['net_votes'].sum())
     
     avg_agree = round(float(group['agree'].mean()), 2)
-    avg_disagree = round(float(group['disagree'].mean()), 2)
+    avg_disagree = round(float(group['agree'].mean()), 2)
     avg_net = round(float(group['net_votes'].mean()), 2)
     
     approved_count = int((group['approved'] == True).sum())
@@ -529,7 +526,8 @@ for pid, group in grouped:
         "avg_agree": avg_agree,
         "avg_disagree": avg_disagree,
         "first_cnt": first_cnt,
-        "last_cnt": last_cnt
+        "last_cnt": last_cnt,
+        "is_qualified": 1 if total_songs >= 4 else 0
     })
 
 table_data_json = json.dumps(stat_records)
@@ -662,23 +660,22 @@ html_table_component = f"""
 </div>
 
 <script>
-    let data = {table_data_json};
+    let rawData = {table_data_json};
     let currentKey = 'total_net';
     let isAsc = false;
 
-    function renderTable() {{
+    function renderTable(sortedData) {{
         const tbody = document.getElementById('tableBody');
         tbody.innerHTML = '';
         
         let rankCounter = 1;
 
-        data.forEach((row) => {{
+        sortedData.forEach((row) => {{
             const tr = document.createElement('tr');
             
-            // 규정 이닝 룰: 곡 수가 4개 미만이면 순위는 '-'
             let rankDisplay = "-";
             let rankClass = "col-rank unqualified";
-            if (row.total_songs >= 4) {{
+            if (row.is_qualified === 1) {{
                 rankDisplay = rankCounter;
                 rankClass = "col-rank";
                 rankCounter++;
@@ -709,6 +706,28 @@ html_table_component = f"""
         }});
     }}
 
+    function doSort(key, asc) {{
+        // 규정 충족 그룹과 규정 미달 그룹 분리
+        let qualified = rawData.filter(d => d.is_qualified === 1);
+        let unqualified = rawData.filter(d => d.is_qualified === 0);
+
+        const comparator = (a, b) => {{
+            let valA = a[key];
+            let valB = b[key];
+            if (typeof valA === 'string') {{
+                return asc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+            }}
+            return asc ? valA - valB : valB - valA;
+        }};
+
+        // 각 그룹 내부에서 독립적으로 정렬
+        qualified.sort(comparator);
+        unqualified.sort(comparator);
+
+        // 규정 충족자 먼저, 미달자('-')는 항상 맨 아래에 결합
+        return qualified.concat(unqualified);
+    }}
+
     function sortTable(key) {{
         if (currentKey === key) {{
             isAsc = !isAsc;
@@ -717,14 +736,7 @@ html_table_component = f"""
             isAsc = (key === 'name' || key === 'student_id') ? true : false;
         }}
 
-        data.sort((a, b) => {{
-            let valA = a[key];
-            let valB = b[key];
-            if (typeof valA === 'string') {{
-                return isAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
-            }}
-            return isAsc ? valA - valB : valB - valA;
-        }});
+        const sortedData = doSort(key, isAsc);
 
         document.querySelectorAll('th').forEach(th => th.classList.remove('active'));
         document.querySelectorAll('.sort-arrow').forEach(ar => {{
@@ -742,11 +754,12 @@ html_table_component = f"""
             }}
         }}
 
-        renderTable();
+        renderTable(sortedData);
     }}
 
-    data.sort((a, b) => b.total_net - a.total_net);
-    renderTable();
+    // 초기 정렬: 순합산 내림차순 (규정 충족자 우선)
+    const initialData = doSort('total_net', false);
+    renderTable(initialData);
 </script>
 </body>
 </html>
