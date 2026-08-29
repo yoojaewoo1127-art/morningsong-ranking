@@ -9,7 +9,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# 2. 야구 기록실 스타일 커스텀 CSS
+# 2. 커스텀 CSS 적용
 st.markdown("""
 <style>
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
@@ -52,12 +52,9 @@ st.markdown("""
         font-weight: 700;
         color: #334155;
         margin-bottom: 12px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
     }
 
-    /* 1등 히어로 섹션 */
+    /* 1등 히어로 영역 */
     .hero-section {
         text-align: center;
         padding-bottom: 14px;
@@ -109,7 +106,7 @@ st.markdown("""
         color: #ef4444;
     }
 
-    /* 2~5위 리스트 섹션 */
+    /* 2~5위 리스트 영역 */
     .sub-list {
         margin-top: 10px;
         display: flex;
@@ -155,7 +152,7 @@ st.markdown("""
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        max-width: 100px;
+        max-width: 95px;
     }
 
     .sub-score {
@@ -167,7 +164,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 3. 데이터 로딩 및 전처리
+# 3. 데이터 로딩
 @st.cache_data(ttl=300)
 def load_data():
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -175,17 +172,13 @@ def load_data():
     users = requests.get("https://sshs.app/api/users", headers=headers).json()
     
     df_songs = pd.DataFrame(songs)
-    
-    # 기본 이미지 URL
     default_pfp = "https://cdn-icons-png.flaticon.com/512/847/847969.png"
     
-    # 유저 정보 딕셔너리 생성
     user_meta = {}
     for u in users:
         sid = u.get("student_id")
         if sid:
             raw_name = u.get("name", str(sid))
-            # '(35기) 23051 심재민' -> '심재민' 파싱
             clean_name = raw_name.split(" ")[-1] if " " in raw_name else raw_name
             pfp = u.get("pfp_url") if u.get("pfp_url") else default_pfp
             user_meta[int(sid)] = {"name": clean_name, "pfp": pfp}
@@ -208,81 +201,48 @@ def get_user(pid):
         return {"name": "알 수 없음", "pfp": default_pfp}
     return user_meta.get(int(pid), {"name": f"학생({int(pid)})", "pfp": default_pfp})
 
-# 4. 카드 렌더링 함수 (1등 히어로 + 2~5등 리스트)
+# 4. 카드 렌더링 함수
 def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
     if df_rank.empty:
         st.markdown(f"<div class='ranking-card'><div class='card-title'>{title}</div><p style='color:#94a3b8;'>기록 없음</p></div>", unsafe_allow_html=True)
         return
 
-    # 1등 정보
     top1 = df_rank.iloc[0]
     top1_info = get_user(top1['proposer'])
     top1_val = top1[val_col]
     top1_val_str = f"+{top1_val}" if unit == "점" and top1_val > 0 else f"{top1_val}"
     score_cls = "hero-score danger" if is_danger else "hero-score"
 
-    # 2등 ~ 5등 리스트 구성
     sub_items_html = ""
     for rank_num, row in enumerate(df_rank.iloc[1:5].itertuples(), start=2):
         u_info = get_user(getattr(row, 'proposer'))
         val = getattr(row, val_col)
         val_str = f"+{val}" if unit == "점" and val > 0 else f"{val}"
         
-        sub_items_html += f"""
-        <div class="sub-item">
-            <div class="sub-left">
-                <span class="sub-rank">{rank_num}</span>
-                <img class="sub-avatar" src="{u_info['pfp']}" onerror="this.src='{default_pfp}';"/>
-                <span class="sub-name" title="{u_info['name']}">{u_info['name']}</span>
-            </div>
-            <span class="sub-score">{val_str}{unit}</span>
-        </div>
-        """
+        # HTML 태그 내 줄바꿈을 제거하여 Streamlit 마크다운 파서 오작동 방지
+        sub_items_html += f"<div class='sub-item'><div class='sub-left'><span class='sub-rank'>{rank_num}</span><img class='sub-avatar' src='{u_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/><span class='sub-name' title='{u_info['name']}'>{u_info['name']}</span></div><span class='sub-score'>{val_str}{unit}</span></div>"
 
-    card_html = f"""
-    <div class="ranking-card">
-        <div class="card-title"><span>{title}</span></div>
-        <div class="hero-section">
-            <div class="gold-badge">1</div>
-            <img class="hero-avatar" src="{top1_info['pfp']}" onerror="this.src='{default_pfp}';"/>
-            <div class="hero-name">{top1_info['name']}</div>
-            <div class="{score_cls}">{top1_val_str}{unit}</div>
-        </div>
-        <div class="sub-list">
-            {sub_items_html}
-        </div>
-    </div>
-    """
+    card_html = f"<div class='ranking-card'><div class='card-title'>{title}</div><div class='hero-section'><div class='gold-badge'>1</div><img class='hero-avatar' src='{top1_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/><div class='hero-name'>{top1_info['name']}</div><div class='{score_cls}'>{top1_val_str}{unit}</div></div><div class='sub-list'>{sub_items_html}</div></div>"
+    
     st.markdown(card_html, unsafe_allow_html=True)
 
 # 5. 각 항목별 순위 계산
-# (1) 최다 좋아요
 likes_df = df_songs.groupby('proposer')['agree'].sum().reset_index().sort_values(by='agree', ascending=False).reset_index(drop=True)
-
-# (2) 최다 순합산 (좋아요 - 싫어요)
 net_high_df = df_songs.groupby('proposer')['net_votes'].sum().reset_index().sort_values(by='net_votes', ascending=False).reset_index(drop=True)
-
-# (3) 최다 기상곡 승인
 app_df = df_songs[df_songs['approved'] == True].groupby('proposer').size().reset_index(name='app_cnt').sort_values(by='app_cnt', ascending=False).reset_index(drop=True)
 
-# (4) 최다 1등 횟수
 top_weekly = df_songs.sort_values(by=['year', 'week', 'net_votes'], ascending=[True, True, False]).groupby(['year', 'week']).first().reset_index()
 first_cnt_df = top_weekly.groupby('proposer').size().reset_index(name='first_cnt').sort_values(by='first_cnt', ascending=False).reset_index(drop=True)
 
-# (5) 최다 싫어요
 dislikes_df = df_songs.groupby('proposer')['disagree'].sum().reset_index().sort_values(by='disagree', ascending=False).reset_index(drop=True)
-
-# (6) 최저 순합산 (민심 최악)
 net_low_df = df_songs.groupby('proposer')['net_votes'].sum().reset_index().sort_values(by='net_votes', ascending=True).reset_index(drop=True)
 
-# (7) 최다 꼴등 횟수
 bot_weekly = df_songs.sort_values(by=['year', 'week', 'net_votes'], ascending=[True, True, True]).groupby(['year', 'week']).first().reset_index()
 last_cnt_df = bot_weekly.groupby('proposer').size().reset_index(name='last_cnt').sort_values(by='last_cnt', ascending=False).reset_index(drop=True)
 
-# (8) 최다 승인 탈락 (approved == False)
 rej_df = df_songs[df_songs['approved'] == False].groupby('proposer').size().reset_index(name='rej_cnt').sort_values(by='rej_cnt', ascending=False).reset_index(drop=True)
 
-# 6. 화면 헤더 및 탭 메뉴
+# 6. 화면 헤더 및 탭
 st.markdown("""
 <div class="main-title">
     <h1>🏆 SSHS 기상곡 명예의 전당</h1>
@@ -292,7 +252,6 @@ st.markdown("""
 
 tab_honor, tab_dishonor = st.tabs(["🏅 명예 기록", "💀 불명예 기록"])
 
-# [탭 1: 명예 기록]
 with tab_honor:
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -304,7 +263,6 @@ with tab_honor:
     with c4:
         render_leaderboard_card("🥇 주별 1위 최다", first_cnt_df, 'first_cnt', '회')
 
-# [탭 2: 불명예 기록]
 with tab_dishonor:
     d1, d2, d3, d4 = st.columns(4)
     with d1:
