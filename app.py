@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import pandas as pd
+import numpy as np
 import json
 
 # 1. 페이지 기본 설정
@@ -309,7 +310,90 @@ def get_user(pid):
         return {"name": "알 수 없음", "full_name": "알 수 없음", "pfp": default_pfp}
     return user_meta.get(int(pid), {"name": f"학생({int(pid)})", "full_name": f"학생({int(pid)})", "pfp": default_pfp})
 
-# 4. 상단 리더보드 카드 렌더링
+# 4. 1위 / 꼴등 데이터 계산
+top_weekly = df_songs.sort_values(by=['year', 'week', 'net_votes'], ascending=[True, True, False]).groupby(['year', 'week']).first().reset_index()
+first_cnt_df = top_weekly.groupby('proposer').size().reset_index(name='first_cnt').sort_values(by='first_cnt', ascending=False).reset_index(drop=True)
+
+bot_weekly = df_songs.sort_values(by=['year', 'week', 'net_votes'], ascending=[True, True, True]).groupby(['year', 'week']).first().reset_index()
+last_cnt_df = bot_weekly.groupby('proposer').size().reset_index(name='last_cnt').sort_values(by='last_cnt', ascending=False).reset_index(drop=True)
+
+first_map = first_cnt_df.set_index('proposer')['first_cnt'].to_dict()
+last_map = last_cnt_df.set_index('proposer')['last_cnt'].to_dict()
+
+# 5. 전교생 기본 지표 집계
+stat_records = []
+grouped = df_songs.groupby('proposer')
+
+for pid, group in grouped:
+    u = get_user(pid)
+    total_songs = len(group)
+    total_agree = int(group['agree'].sum())
+    total_disagree = int(group['disagree'].sum())
+    total_net = int(group['net_votes'].sum())
+    
+    avg_agree = round(float(group['agree'].mean()), 2)
+    avg_disagree = round(float(group['disagree'].mean()), 2)
+    avg_net = round(float(group['net_votes'].mean()), 2)
+    
+    approved_count = int((group['approved'] == True).sum())
+    approval_rate = round((approved_count / total_songs) * 100, 1)
+    
+    first_cnt = first_map.get(pid, 0)
+    last_cnt = last_map.get(pid, 0)
+    
+    stat_records.append({
+        "pfp": u['pfp'],
+        "name": u['name'],
+        "student_id": int(pid) if not pd.isna(pid) else 0,
+        "proposer": pid,
+        "total_songs": total_songs,
+        "approved_cnt": approved_count,
+        "approval_rate": approval_rate,
+        "total_net": total_net,
+        "total_agree": total_agree,
+        "total_disagree": total_disagree,
+        "avg_net": avg_net,
+        "avg_agree": avg_agree,
+        "avg_disagree": avg_disagree,
+        "first_cnt": first_cnt,
+        "last_cnt": last_cnt,
+        "is_qualified": 1 if total_songs >= 4 else 0
+    })
+
+df_base_stat = pd.DataFrame(stat_records)
+
+# 6. Z-Score 기반 WAR 산출 (야구식 0.00 기준)
+def calc_z(series):
+    std = series.std(ddof=0)
+    return (series - series.mean()) / std if std > 0 else series * 0
+
+# 규정 충족자 기반 표준점수 산출
+df_base_stat['z_app'] = calc_z(df_base_stat['approved_cnt'])
+df_base_stat['z_net'] = calc_z(df_base_stat['total_net'])
+df_base_stat['z_first'] = calc_z(df_base_stat['first_cnt'])
+df_base_stat['z_avg_net'] = calc_z(df_base_stat['avg_net'])
+df_base_stat['z_last'] = calc_z(df_base_stat['last_cnt'])
+
+# WAR 가중 합산
+df_base_stat['war'] = (
+    0.35 * df_base_stat['z_app'] +
+    0.30 * df_base_stat['z_net'] +
+    0.20 * df_base_stat['z_first'] +
+    0.15 * df_base_stat['z_avg_net'] -
+    0.15 * df_base_stat['z_last']
+).round(2)
+
+# 7. 상단 랭킹 데이터 집계
+war_rank_df = df_base_stat[df_base_stat['is_qualified'] == 1].sort_values(by='war', ascending=False).reset_index(drop=True)
+likes_df = df_songs.groupby('proposer')['agree'].sum().reset_index().sort_values(by='agree', ascending=False).reset_index(drop=True)
+net_high_df = df_songs.groupby('proposer')['net_votes'].sum().reset_index().sort_values(by='net_votes', ascending=False).reset_index(drop=True)
+app_df = df_songs[df_songs['approved'] == True].groupby('proposer').size().reset_index(name='app_cnt').sort_values(by='app_cnt', ascending=False).reset_index(drop=True)
+
+dislikes_df = df_songs.groupby('proposer')['disagree'].sum().reset_index().sort_values(by='disagree', ascending=False).reset_index(drop=True)
+net_low_df = df_songs.groupby('proposer')['net_votes'].sum().reset_index().sort_values(by='net_votes', ascending=True).reset_index(drop=True)
+rej_df = df_songs[df_songs['approved'] == False].groupby('proposer').size().reset_index(name='rej_cnt').sort_values(by='rej_cnt', ascending=False).reset_index(drop=True)
+
+# 8. 상단 카드 렌더링 함수
 def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
     if df_rank.empty:
         st.markdown(f"<div class='ranking-card'><div class='card-title'>{title}</div><p style='color:#94a3b8;'>기록 없음</p></div>", unsafe_allow_html=True)
@@ -318,40 +402,35 @@ def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
     top1 = df_rank.iloc[0]
     top1_info = get_user(top1['proposer'])
     top1_val = top1[val_col]
-    top1_val_str = f"+{top1_val}" if unit == "점" and top1_val > 0 else f"{top1_val}"
+    
+    if unit == "점" or unit == "WAR":
+        top1_val_str = f"+{top1_val:.2f}" if (unit == "WAR" and top1_val > 0) else (f"+{top1_val}" if top1_val > 0 else f"{top1_val}")
+    else:
+        top1_val_str = f"{top1_val}"
+        
     score_cls = "hero-score danger" if is_danger else "hero-score"
 
     sub_items_html = ""
     for rank_num, row in enumerate(df_rank.iloc[1:5].itertuples(), start=2):
         u_info = get_user(getattr(row, 'proposer'))
         val = getattr(row, val_col)
-        val_str = f"+{val}" if unit == "점" and val > 0 else f"{val}"
-        sub_items_html += f"<div class='sub-item'><div class='sub-left'><span class='sub-rank'>{rank_num}</span><img class='sub-avatar' src='{u_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/><span class='sub-name' title='{u_info['name']}'>{u_info['name']}</span></div><span class='sub-score'>{val_str}{unit}</span></div>"
+        if unit == "WAR":
+            val_str = f"+{val:.2f}" if val > 0 else f"{val:.2f}"
+        elif unit == "점" and val > 0:
+            val_str = f"+{val}"
+        else:
+            val_str = f"{val}"
+            
+        sub_items_html += f"<div class='sub-item'><div class='sub-left'><span class='sub-rank'>{rank_num}</span><img class='sub-avatar' src='{u_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/><span class='sub-name' title='{u_info['name']}'>{u_info['name']}</span></div><span class='sub-score'>{val_str}{unit if unit != 'WAR' else ''}</span></div>"
 
-    card_html = f"<div class='ranking-card'><div class='card-title'>{title}</div><div class='hero-section'><div class='gold-badge'>1</div><img class='hero-avatar' src='{top1_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/><div class='hero-name'>{top1_info['name']}</div><div class='{score_cls}'>{top1_val_str}{unit}</div></div><div class='sub-list'>{sub_items_html}</div></div>"
+    card_html = f"<div class='ranking-card'><div class='card-title'>{title}</div><div class='hero-section'><div class='gold-badge'>1</div><img class='hero-avatar' src='{top1_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/><div class='hero-name'>{top1_info['name']}</div><div class='{score_cls}'>{top1_val_str}{(' ' + unit) if unit != '점' else unit}</div></div><div class='sub-list'>{sub_items_html}</div></div>"
     st.markdown(card_html, unsafe_allow_html=True)
 
-# 5. 상단 랭킹 데이터 집계
-likes_df = df_songs.groupby('proposer')['agree'].sum().reset_index().sort_values(by='agree', ascending=False).reset_index(drop=True)
-net_high_df = df_songs.groupby('proposer')['net_votes'].sum().reset_index().sort_values(by='net_votes', ascending=False).reset_index(drop=True)
-app_df = df_songs[df_songs['approved'] == True].groupby('proposer').size().reset_index(name='app_cnt').sort_values(by='app_cnt', ascending=False).reset_index(drop=True)
-
-top_weekly = df_songs.sort_values(by=['year', 'week', 'net_votes'], ascending=[True, True, False]).groupby(['year', 'week']).first().reset_index()
-first_cnt_df = top_weekly.groupby('proposer').size().reset_index(name='first_cnt').sort_values(by='first_cnt', ascending=False).reset_index(drop=True)
-
-dislikes_df = df_songs.groupby('proposer')['disagree'].sum().reset_index().sort_values(by='disagree', ascending=False).reset_index(drop=True)
-net_low_df = df_songs.groupby('proposer')['net_votes'].sum().reset_index().sort_values(by='net_votes', ascending=True).reset_index(drop=True)
-
-bot_weekly = df_songs.sort_values(by=['year', 'week', 'net_votes'], ascending=[True, True, True]).groupby(['year', 'week']).first().reset_index()
-last_cnt_df = bot_weekly.groupby('proposer').size().reset_index(name='last_cnt').sort_values(by='last_cnt', ascending=False).reset_index(drop=True)
-
-rej_df = df_songs[df_songs['approved'] == False].groupby('proposer').size().reset_index(name='rej_cnt').sort_values(by='rej_cnt', ascending=False).reset_index(drop=True)
-
-# 6. 상단 UI 렌더링
+# 9. 상단 UI 렌더링
 st.markdown("""
 <div class="main-title">
     <h1>🏆 SSHS 기상곡 명예의 전당</h1>
-    <p>실시간 부문별 리더보드 & 전교생 통계 차트 (재학생 전용)</p>
+    <p>실시간 부문별 리더보드 & 야구식 종합 기여도(WAR) 통계</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -359,10 +438,10 @@ tab_honor, tab_dishonor = st.tabs(["🏅 명예 기록", "💀 불명예 기록"
 
 with tab_honor:
     c1, c2, c3, c4 = st.columns(4)
-    with c1: render_leaderboard_card("❤️ 최다 좋아요", likes_df, 'agree', '개')
+    with c1: render_leaderboard_card("👑 종합 기여도 (WAR)", war_rank_df, 'war', 'WAR')
     with c2: render_leaderboard_card("🔥 최고 순합산 (Net)", net_high_df, 'net_votes', '점')
     with c3: render_leaderboard_card("🎉 최다 곡 승인", app_df, 'app_cnt', '곡')
-    with c4: render_leaderboard_card("🥇 주별 1위 최다", first_cnt_df, 'first_cnt', '회')
+    with c4: render_leaderboard_card("❤️ 최다 좋아요", likes_df, 'agree', '개')
 
 with tab_dishonor:
     d1, d2, d3, d4 = st.columns(4)
@@ -372,7 +451,7 @@ with tab_dishonor:
     with d4: render_leaderboard_card("🚫 최다 승인 탈락", rej_df, 'rej_cnt', '곡', is_danger=True)
 
 # -------------------------------------------------------------
-# 7. 🔍 선수(학생) 개별 기록 검색 및 상세 리포트 카드
+# 10. 🔍 선수(학생) 개별 기록 검색 및 상세 리포트 카드
 # -------------------------------------------------------------
 st.markdown("<div class='section-header'>🔍 학생 개인별 상세 기록 조회</div>", unsafe_allow_html=True)
 
@@ -398,6 +477,7 @@ if selected_label != "선택 안 함":
     target_pid = user_id_map[selected_label]
     target_u = get_user(target_pid)
     target_songs = df_songs[df_songs['proposer'] == target_pid].copy()
+    user_row = df_base_stat[df_base_stat['student_id'] == target_pid].iloc[0]
     
     p_total_songs = len(target_songs)
     p_approved = int((target_songs['approved'] == True).sum())
@@ -408,6 +488,7 @@ if selected_label != "선택 안 함":
     p_avg_net = round(float(target_songs['net_votes'].mean()), 2)
     p_avg_agree = round(float(target_songs['agree'].mean()), 2)
     p_avg_disagree = round(float(target_songs['disagree'].mean()), 2)
+    p_war = user_row['war']
     
     def get_rank_str(df_rank, val_col):
         res = df_rank[df_rank['proposer'] == target_pid]
@@ -416,10 +497,12 @@ if selected_label != "선택 안 함":
             return f"<b>{r}위</b>"
         return "순위 밖"
 
+    r_war = get_rank_str(war_rank_df, 'war')
     r_net = get_rank_str(net_high_df, 'net_votes')
     r_agree = get_rank_str(likes_df, 'agree')
     r_app = get_rank_str(app_df, 'app_cnt')
-    r_first = get_rank_str(first_cnt_df, 'first_cnt')
+
+    war_display_str = f"+{p_war:.2f}" if p_war > 0 else f"{p_war:.2f}"
 
     st.markdown(f"""
     <div class="player-card">
@@ -432,19 +515,27 @@ if selected_label != "선택 안 함":
         </div>
         <div class="ranking-badge-bar">
             <span>🏆 <b>시즌 랭킹</b></span>
+            <span class="badge-bar-item">종합 WAR {r_war}</span> ·
             <span class="badge-bar-item">순합산 {r_net}</span> ·
             <span class="badge-bar-item">좋아요 {r_agree}</span> ·
-            <span class="badge-bar-item">선정 곡수 {r_app}</span> ·
-            <span class="badge-bar-item">주별 1위 {r_first}</span>
+            <span class="badge-bar-item">선정 곡수 {r_app}</span>
         </div>
         <div class="stats-grid">
             <div class="stats-cell">
+                <div class="stats-cell-label">종합 기여도 (WAR)</div>
+                <div class="stats-cell-val highlight">{war_display_str}</div>
+            </div>
+            <div class="stats-cell">
                 <div class="stats-cell-label">순합산 (Net)</div>
-                <div class="stats-cell-val highlight">{'+' + str(p_net) if p_net > 0 else p_net}점</div>
+                <div class="stats-cell-val">{'+' + str(p_net) if p_net > 0 else p_net}점</div>
             </div>
             <div class="stats-cell">
                 <div class="stats-cell-label">승인율 (성공/등록)</div>
                 <div class="stats-cell-val">{p_rate}% <span style="font-size:13px; color:#64748b;">({p_approved}/{p_total_songs})</span></div>
+            </div>
+            <div class="stats-cell">
+                <div class="stats-cell-label">최종 승인 곡수</div>
+                <div class="stats-cell-val highlight">{p_approved}곡</div>
             </div>
             <div class="stats-cell">
                 <div class="stats-cell-label">합산 좋아요</div>
@@ -462,14 +553,6 @@ if selected_label != "선택 안 함":
                 <div class="stats-cell-label">곡당 평균 좋아요</div>
                 <div class="stats-cell-val">{p_avg_agree}</div>
             </div>
-            <div class="stats-cell">
-                <div class="stats-cell-label">곡당 평균 싫어요</div>
-                <div class="stats-cell-val">{p_avg_disagree}</div>
-            </div>
-            <div class="stats-cell">
-                <div class="stats-cell-label">최종 승인 곡수</div>
-                <div class="stats-cell-val highlight">{p_approved}곡</div>
-            </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -485,52 +568,11 @@ if selected_label != "선택 안 함":
     st.line_chart(chart_data)
 
 # -------------------------------------------------------------
-# 8. 📊 전교생 종합 기록실 (규정 충족자 우선 정렬 & 미달자 하단 배치)
+# 11. 📊 전교생 종합 기록실 (WAR 포함 인터랙티브 테이블)
 # -------------------------------------------------------------
 st.markdown("<div class='section-header'>📋 전교생 종합 통계 기록실 <span style='font-size: 13px; font-weight: normal; color: #64748b;'>(※ 규정: 신청 곡 수 4개 이상만 상단 순위 진입, 미달 시 하단 '-')</span></div>", unsafe_allow_html=True)
 
-first_map = first_cnt_df.set_index('proposer')['first_cnt'].to_dict()
-last_map = last_cnt_df.set_index('proposer')['last_cnt'].to_dict()
-
-stat_records = []
-grouped = df_songs.groupby('proposer')
-
-for pid, group in grouped:
-    u = get_user(pid)
-    total_songs = len(group)
-    total_agree = int(group['agree'].sum())
-    total_disagree = int(group['disagree'].sum())
-    total_net = int(group['net_votes'].sum())
-    
-    avg_agree = round(float(group['agree'].mean()), 2)
-    avg_disagree = round(float(group['agree'].mean()), 2)
-    avg_net = round(float(group['net_votes'].mean()), 2)
-    
-    approved_count = int((group['approved'] == True).sum())
-    approval_rate = round((approved_count / total_songs) * 100, 1)
-    
-    first_cnt = first_map.get(pid, 0)
-    last_cnt = last_map.get(pid, 0)
-    
-    stat_records.append({
-        "pfp": u['pfp'],
-        "name": u['name'],
-        "student_id": int(pid) if not pd.isna(pid) else 0,
-        "total_songs": total_songs,
-        "approved_cnt": approved_count,
-        "approval_rate": approval_rate,
-        "total_net": total_net,
-        "total_agree": total_agree,
-        "total_disagree": total_disagree,
-        "avg_net": avg_net,
-        "avg_agree": avg_agree,
-        "avg_disagree": avg_disagree,
-        "first_cnt": first_cnt,
-        "last_cnt": last_cnt,
-        "is_qualified": 1 if total_songs >= 4 else 0
-    })
-
-table_data_json = json.dumps(stat_records)
+table_data_json = json.dumps(df_base_stat.to_dict(orient='records'))
 
 html_table_component = f"""
 <!DOCTYPE html>
@@ -642,7 +684,8 @@ html_table_component = f"""
                 <th style="cursor: default; text-align: center;">순위</th>
                 <th onclick="sortTable('name')" style="text-align: left;">선수/이름 <span class="sort-arrow" id="arrow-name">▲</span></th>
                 <th onclick="sortTable('student_id')">교번 <span class="sort-arrow" id="arrow-student_id">▲</span></th>
-                <th onclick="sortTable('total_net')" class="active">순합산(Net) <span class="sort-arrow desc" id="arrow-total_net">▲</span></th>
+                <th onclick="sortTable('war')" class="active">WAR <span class="sort-arrow desc" id="arrow-war">▲</span></th>
+                <th onclick="sortTable('total_net')">순합산(Net) <span class="sort-arrow" id="arrow-total_net">▲</span></th>
                 <th onclick="sortTable('total_songs')">곡 등록수 <span class="sort-arrow" id="arrow-total_songs">▲</span></th>
                 <th onclick="sortTable('approved_cnt')">선정수 <span class="sort-arrow" id="arrow-approved_cnt">▲</span></th>
                 <th onclick="sortTable('approval_rate')">승인율 <span class="sort-arrow" id="arrow-approval_rate">▲</span></th>
@@ -661,7 +704,7 @@ html_table_component = f"""
 
 <script>
     let rawData = {table_data_json};
-    let currentKey = 'total_net';
+    let currentKey = 'war';
     let isAsc = false;
 
     function renderTable(sortedData) {{
@@ -681,6 +724,8 @@ html_table_component = f"""
                 rankCounter++;
             }}
 
+            let warFormatted = row.war > 0 ? '+' + row.war.toFixed(2) : row.war.toFixed(2);
+
             tr.innerHTML = `
                 <td class="${{rankClass}}">${{rankDisplay}}</td>
                 <td>
@@ -690,7 +735,8 @@ html_table_component = f"""
                     </div>
                 </td>
                 <td>${{row.student_id}}</td>
-                <td class="highlight-cell">${{row.total_net > 0 ? '+' + row.total_net : row.total_net}}</td>
+                <td class="highlight-cell">${{warFormatted}}</td>
+                <td>${{row.total_net > 0 ? '+' + row.total_net : row.total_net}}</td>
                 <td>${{row.total_songs}}</td>
                 <td>${{row.approved_cnt}}</td>
                 <td>${{row.approval_rate.toFixed(1)}}%</td>
@@ -707,7 +753,6 @@ html_table_component = f"""
     }}
 
     function doSort(key, asc) {{
-        // 규정 충족 그룹과 규정 미달 그룹 분리
         let qualified = rawData.filter(d => d.is_qualified === 1);
         let unqualified = rawData.filter(d => d.is_qualified === 0);
 
@@ -720,11 +765,9 @@ html_table_component = f"""
             return asc ? valA - valB : valB - valA;
         }};
 
-        // 각 그룹 내부에서 독립적으로 정렬
         qualified.sort(comparator);
         unqualified.sort(comparator);
 
-        // 규정 충족자 먼저, 미달자('-')는 항상 맨 아래에 결합
         return qualified.concat(unqualified);
     }}
 
@@ -757,8 +800,8 @@ html_table_component = f"""
         renderTable(sortedData);
     }}
 
-    // 초기 정렬: 순합산 내림차순 (규정 충족자 우선)
-    const initialData = doSort('total_net', false);
+    // 초기 정렬: WAR 내림차순
+    const initialData = doSort('war', false);
     renderTable(initialData);
 </script>
 </body>
