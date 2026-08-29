@@ -5,12 +5,12 @@ import json
 
 # 1. 페이지 기본 설정
 st.set_page_config(
-    page_title="SSHS 기상곡 리더보드 & 전교생 통계",
+    page_title="SSHS 기상곡 리더보드 & 개인 기록실",
     page_icon="🎵",
     layout="wide"
 )
 
-# 2. 커스텀 CSS
+# 2. 커스텀 CSS (네이버 스포츠 선수 상세 기록 스타일 포함)
 st.markdown("""
 <style>
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
@@ -25,7 +25,7 @@ st.markdown("""
 
     .main-title {
         text-align: center;
-        padding: 10px 0 20px 0;
+        padding: 10px 0 16px 0;
     }
     .main-title h1 {
         font-size: 28px;
@@ -45,7 +45,7 @@ st.markdown("""
         padding: 18px 16px 14px 16px;
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.04);
         border: 1px solid #e2e8f0;
-        margin-bottom: 20px;
+        margin-bottom: 16px;
     }
 
     .card-title {
@@ -165,12 +165,110 @@ st.markdown("""
         font-size: 20px;
         font-weight: 800;
         color: #1e293b;
-        margin: 30px 0 16px 0;
+        margin: 24px 0 12px 0;
+    }
+
+    /* 🔍 선수 상세 기록 카드 UI */
+    .player-card {
+        background: #ffffff;
+        border-radius: 16px;
+        border: 1px solid #e2e8f0;
+        box-shadow: 0 4px 14px rgba(0,0,0,0.05);
+        padding: 24px;
+        margin-top: 10px;
+        margin-bottom: 24px;
+    }
+
+    .player-header {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 18px;
+    }
+
+    .player-avatar {
+        width: 64px;
+        height: 64px;
+        border-radius: 50%;
+        object-fit: cover;
+        border: 2px solid #e2e8f0;
+    }
+
+    .player-title-box h3 {
+        margin: 0;
+        font-size: 20px;
+        font-weight: 800;
+        color: #0f172a;
+    }
+
+    .player-title-box p {
+        margin: 2px 0 0 0;
+        font-size: 13px;
+        color: #64748b;
+    }
+
+    /* 상단 검은색 랭킹 바 */
+    .ranking-badge-bar {
+        background: #0f172a;
+        color: #ffffff;
+        border-radius: 10px;
+        padding: 12px 20px;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+        margin-bottom: 20px;
+        font-size: 13.5px;
+    }
+
+    .badge-bar-item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    .badge-bar-item b {
+        color: #fbbf24;
+    }
+
+    /* 8칸 기록 그리드 */
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 1px;
+        background: #e2e8f0;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        overflow: hidden;
+        margin-bottom: 20px;
+    }
+
+    .stats-cell {
+        background: #ffffff;
+        padding: 16px 10px;
+        text-align: center;
+    }
+
+    .stats-cell-label {
+        font-size: 12.5px;
+        color: #64748b;
+        font-weight: 600;
+        margin-bottom: 4px;
+    }
+
+    .stats-cell-val {
+        font-size: 18px;
+        font-weight: 800;
+        color: #0f172a;
+    }
+
+    .stats-cell-val.highlight {
+        color: #2563eb;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# 3. 데이터 로딩
+# 3. 데이터 로딩 및 전처리
 @st.cache_data(ttl=300)
 def load_data():
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -187,7 +285,7 @@ def load_data():
             raw_name = u.get("name", str(sid))
             clean_name = raw_name.split(" ")[-1] if " " in raw_name else raw_name
             pfp = u.get("pfp_url") if u.get("pfp_url") else default_pfp
-            user_meta[int(sid)] = {"name": clean_name, "pfp": pfp}
+            user_meta[int(sid)] = {"name": clean_name, "full_name": raw_name, "pfp": pfp}
             
     df_songs['proposer'] = pd.to_numeric(df_songs['proposer'], errors='coerce')
     df_songs['agree'] = pd.to_numeric(df_songs['agree'], errors='coerce').fillna(0).astype(int)
@@ -204,8 +302,8 @@ except Exception as e:
 
 def get_user(pid):
     if pd.isna(pid):
-        return {"name": "알 수 없음", "pfp": default_pfp}
-    return user_meta.get(int(pid), {"name": f"학생({int(pid)})", "pfp": default_pfp})
+        return {"name": "알 수 없음", "full_name": "알 수 없음", "pfp": default_pfp}
+    return user_meta.get(int(pid), {"name": f"학생({int(pid)})", "full_name": f"학생({int(pid)})", "pfp": default_pfp})
 
 # 4. 상단 카드 렌더링 함수
 def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
@@ -229,7 +327,7 @@ def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
     card_html = f"<div class='ranking-card'><div class='card-title'>{title}</div><div class='hero-section'><div class='gold-badge'>1</div><img class='hero-avatar' src='{top1_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/><div class='hero-name'>{top1_info['name']}</div><div class='{score_cls}'>{top1_val_str}{unit}</div></div><div class='sub-list'>{sub_items_html}</div></div>"
     st.markdown(card_html, unsafe_allow_html=True)
 
-# 5. 상단 랭킹 데이터 집계
+# 5. 순위 계산용 데이터 집계
 likes_df = df_songs.groupby('proposer')['agree'].sum().reset_index().sort_values(by='agree', ascending=False).reset_index(drop=True)
 net_high_df = df_songs.groupby('proposer')['net_votes'].sum().reset_index().sort_values(by='net_votes', ascending=False).reset_index(drop=True)
 app_df = df_songs[df_songs['approved'] == True].groupby('proposer').size().reset_index(name='app_cnt').sort_values(by='app_cnt', ascending=False).reset_index(drop=True)
@@ -245,7 +343,7 @@ last_cnt_df = bot_weekly.groupby('proposer').size().reset_index(name='last_cnt')
 
 rej_df = df_songs[df_songs['approved'] == False].groupby('proposer').size().reset_index(name='rej_cnt').sort_values(by='rej_cnt', ascending=False).reset_index(drop=True)
 
-# 6. 상단 카드 UI 렌더링
+# 6. 상단 UI 렌더링
 st.markdown("""
 <div class="main-title">
     <h1>🏆 SSHS 기상곡 명예의 전당</h1>
@@ -270,7 +368,126 @@ with tab_dishonor:
     with d4: render_leaderboard_card("🚫 최다 승인 탈락", rej_df, 'rej_cnt', '곡', is_danger=True)
 
 # -------------------------------------------------------------
-# 7. 📊 전교생 종합 기록실 (클릭 시 세모 회전 인터랙티브 테이블)
+# 7. 🔍 선수(학생) 개별 기록 검색 및 상세 리포트 카드
+# -------------------------------------------------------------
+st.markdown("<div class='section-header'>🔍 학생 개인별 상세 기록 조회</div>", unsafe_allow_html=True)
+
+# 검색용 학생 리스트 구성 (곡을 1번이라도 올린 학생 기준)
+all_proposers = df_songs['proposer'].dropna().unique().astype(int)
+user_options = []
+user_id_map = {}
+
+for pid in all_proposers:
+    u = get_user(pid)
+    label = f"{u['name']} ({pid})"
+    user_options.append(label)
+    user_id_map[label] = pid
+
+user_options.sort()
+
+# 검색 및 선택 UI
+selected_label = st.selectbox(
+    "이름 또는 교번을 검색하세요:",
+    options=["선택 안 함"] + user_options,
+    index=0
+)
+
+if selected_label != "선택 안 함":
+    target_pid = user_id_map[selected_label]
+    target_u = get_user(target_pid)
+    target_songs = df_songs[df_songs['proposer'] == target_pid].copy()
+    
+    # 개인 지표 계산
+    p_total_songs = len(target_songs)
+    p_approved = int((target_songs['approved'] == True).sum())
+    p_rate = round((p_approved / p_total_songs) * 100, 1)
+    p_net = int(target_songs['net_votes'].sum())
+    p_agree = int(target_songs['agree'].sum())
+    p_disagree = int(target_songs['disagree'].sum())
+    p_avg_net = round(float(target_songs['net_votes'].mean()), 2)
+    p_avg_agree = round(float(target_songs['agree'].mean()), 2)
+    p_avg_disagree = round(float(target_songs['disagree'].mean()), 2)
+    
+    # 순위 계산 함수
+    def get_rank_str(df_rank, val_col):
+        res = df_rank[df_rank['proposer'] == target_pid]
+        if not res.empty:
+            r = res.index[0] + 1
+            return f"<b>{r}위</b>"
+        return "순위 밖"
+
+    r_net = get_rank_str(net_high_df, 'net_votes')
+    r_agree = get_rank_str(likes_df, 'agree')
+    r_app = get_rank_str(app_df, 'app_cnt')
+    r_first = get_rank_str(first_cnt_df, 'first_cnt')
+
+    # 선수 상세 카드 렌더링
+    st.markdown(f"""
+    <div class="player-card">
+        <div class="player-header">
+            <img class="player-avatar" src="{target_u['pfp']}" onerror="this.src='{default_pfp}'"/>
+            <div class="player-title-box">
+                <h3>{target_u['name']} <span style="font-size: 14px; font-weight: normal; color: #64748b;">(교번: {target_pid})</span></h3>
+                <p>SSHS 기상곡 아티스트</p>
+            </div>
+        </div>
+        <div class="ranking-badge-bar">
+            <span>🏆 <b>시즌 랭킹</b></span>
+            <span class="badge-bar-item">순합산 {r_net}</span> ·
+            <span class="badge-bar-item">좋아요 {r_agree}</span> ·
+            <span class="badge-bar-item">선정 곡수 {r_app}</span> ·
+            <span class="badge-bar-item">주별 1위 {r_first}</span>
+        </div>
+        <div class="stats-grid">
+            <div class="stats-cell">
+                <div class="stats-cell-label">순합산 (Net)</div>
+                <div class="stats-cell-val highlight">{'+' + str(p_net) if p_net > 0 else p_net}점</div>
+            </div>
+            <div class="stats-cell">
+                <div class="stats-cell-label">승인율 (성공/등록)</div>
+                <div class="stats-cell-val">{p_rate}% <span style="font-size:13px; color:#64748b;">({p_approved}/{p_total_songs})</span></div>
+            </div>
+            <div class="stats-cell">
+                <div class="stats-cell-label">합산 좋아요</div>
+                <div class="stats-cell-val">{p_agree}개</div>
+            </div>
+            <div class="stats-cell">
+                <div class="stats-cell-label">합산 싫어요</div>
+                <div class="stats-cell-val">{p_disagree}개</div>
+            </div>
+            <div class="stats-cell">
+                <div class="stats-cell-label">곡당 평균 Net</div>
+                <div class="stats-cell-val">{'+' + str(p_avg_net) if p_avg_net > 0 else p_avg_net}</div>
+            </div>
+            <div class="stats-cell">
+                <div class="stats-cell-label">곡당 평균 좋아요</div>
+                <div class="stats-cell-val">{p_avg_agree}</div>
+            </div>
+            <div class="stats-cell">
+                <div class="stats-cell-label">곡당 평균 싫어요</div>
+                <div class="stats-cell-val">{p_avg_disagree}</div>
+            </div>
+            <div class="stats-cell">
+                <div class="stats-cell-label">최종 승인 곡수</div>
+                <div class="stats-cell-val highlight">{p_approved}곡</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # 신청 곡들의 주차별 득표 추이 그래프
+    target_songs['주차'] = target_songs['year'].astype(str) + "년 " + target_songs['week'].astype(str) + "주"
+    chart_data = target_songs[['주차', 'net_votes', 'agree', 'disagree']].rename(columns={
+        'net_votes': '순합산(Net)',
+        'agree': '좋아요',
+        'disagree': '싫어요'
+    }).set_index('주차')
+    
+    st.caption("📈 주차별 신청곡 득표 추이")
+    st.line_chart(chart_data)
+
+# -------------------------------------------------------------
+# 8. 📊 전교생 종합 기록실 (클릭 시 세모 회전 인터랙티브 테이블)
 # -------------------------------------------------------------
 st.markdown("<div class='section-header'>📋 전교생 종합 통계 기록실</div>", unsafe_allow_html=True)
 
@@ -288,7 +505,7 @@ for pid, group in grouped:
     total_net = int(group['net_votes'].sum())
     
     avg_agree = round(float(group['agree'].mean()), 2)
-    avg_disagree = round(float(group['disagree'].mean()), 2)
+    avg_disagree = round(float(group['agree'].mean()), 2)
     avg_net = round(float(group['net_votes'].mean()), 2)
     
     approved_count = int((group['approved'] == True).sum())
@@ -314,7 +531,6 @@ for pid, group in grouped:
         "last_cnt": last_cnt
     })
 
-# JSON으로 전달하여 프론트엔드에서 원클릭 삼각형 정렬 구현
 table_data_json = json.dumps(stat_records)
 
 html_table_component = f"""
@@ -484,7 +700,6 @@ html_table_component = f"""
             isAsc = (key === 'name' || key === 'student_id') ? true : false;
         }}
 
-        // 정렬 수행
         data.sort((a, b) => {{
             let valA = a[key];
             let valB = b[key];
@@ -494,7 +709,6 @@ html_table_component = f"""
             return isAsc ? valA - valB : valB - valA;
         }});
 
-        // 세모 화살표 스타일 업데이트 (180도 회전 애니메이션)
         document.querySelectorAll('th').forEach(th => th.classList.remove('active'));
         document.querySelectorAll('.sort-arrow').forEach(ar => {{
             ar.classList.remove('desc');
@@ -514,7 +728,6 @@ html_table_component = f"""
         renderTable();
     }}
 
-    // 초기 렌더링
     data.sort((a, b) => b.total_net - a.total_net);
     renderTable();
 </script>
@@ -522,5 +735,4 @@ html_table_component = f"""
 </html>
 """
 
-# HTML 컴포넌트로 테이블 삽입 (높이 750px 스크롤)
 st.components.v1.html(html_table_component, height=750, scrolling=True)
