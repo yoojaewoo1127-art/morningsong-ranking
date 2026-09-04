@@ -122,7 +122,6 @@ st.markdown("""
         padding-right: 4px;
     }
 
-    /* 스크롤바 미세 디자인 */
     .sub-list::-webkit-scrollbar {
         width: 4px;
     }
@@ -194,7 +193,7 @@ st.markdown("""
         box-shadow: 0 4px 14px rgba(0,0,0,0.05);
         padding: 24px;
         margin-top: 10px;
-        margin-bottom: 24px;
+        margin-bottom: 20px;
     }
 
     .player-header {
@@ -379,7 +378,7 @@ for pid, group in grouped:
 
 df_base_stat = pd.DataFrame(stat_records)
 
-# 6. Z-Score 기반 종합 기여도 점수 산출
+# 6. Z-Score 기반 종합 점수 산출
 def calc_z(series):
     std = series.std(ddof=0)
     return (series - series.mean()) / std if std > 0 else series * 0
@@ -408,7 +407,7 @@ dislikes_df = df_songs.groupby('proposer')['disagree'].sum().reset_index().sort_
 net_low_df = df_songs.groupby('proposer')['net_votes'].sum().reset_index().sort_values(by='net_votes', ascending=True).reset_index(drop=True)
 rej_df = df_songs[df_songs['approved'] == False].groupby('proposer').size().reset_index(name='rej_cnt').sort_values(by='rej_cnt', ascending=False).reset_index(drop=True)
 
-# 8. 상단 카드 렌더링 함수 (스크롤 지원: 최대 15위까지 렌더링)
+# 8. 상단 카드 렌더링 함수
 def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
     if df_rank.empty:
         st.markdown(f"<div class='ranking-card'><div class='card-title'>{title}</div><p style='color:#94a3b8;'>기록 없음</p></div>", unsafe_allow_html=True)
@@ -427,7 +426,6 @@ def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
         
     score_cls = "hero-score danger" if is_danger else "hero-score"
 
-    # 2위부터 최대 15위까지 스크롤 리스트에 포함
     sub_items_html = ""
     for rank_num, row in enumerate(df_rank.iloc[1:15].itertuples(), start=2):
         u_info = get_user(getattr(row, 'proposer'))
@@ -577,8 +575,10 @@ if selected_label != "선택 안 함":
     </div>
     """, unsafe_allow_html=True)
 
-    target_songs['주차'] = target_songs['year'].astype(str) + "년 " + target_songs['week'].astype(str) + "주"
-    chart_data = target_songs[['주차', 'net_votes', 'agree', 'disagree']].rename(columns={
+    # 📈 주차별 신청곡 득표 추이 그래프
+    target_songs_sorted = target_songs.sort_values(by=['year', 'week'], ascending=[True, True]).copy()
+    target_songs_sorted['주차'] = target_songs_sorted['year'].astype(str) + "년 " + target_songs_sorted['week'].astype(str) + "주"
+    chart_data = target_songs_sorted[['주차', 'net_votes', 'agree', 'disagree']].rename(columns={
         'net_votes': '순합산(Net)',
         'agree': '좋아요',
         'disagree': '싫어요'
@@ -586,6 +586,26 @@ if selected_label != "선택 안 함":
     
     st.caption("📈 주차별 신청곡 득표 추이")
     st.line_chart(chart_data)
+
+    # 🎵 신청 기상곡 상세 히스토리 테이블
+    st.markdown(f"<div style='font-size: 16px; font-weight: 700; color: #1e293b; margin: 18px 0 8px 0;'>🎵 {target_u['name']} 학생의 신청곡 목록 ({len(target_songs)}곡)</div>", unsafe_allow_html=True)
+    
+    song_list_df = target_songs.sort_values(by=['year', 'week'], ascending=[False, False]).copy()
+    song_list_df['주차'] = song_list_df['year'].astype(str) + "년 " + song_list_df['week'].astype(str) + "주"
+    song_list_df['승인 여부'] = song_list_df['approved'].apply(lambda x: "✅ 채택(승인)" if x is True else "❌ 탈락")
+    
+    display_song_df = song_list_df[['주차', 'title', 'net_votes', 'agree', 'disagree', '승인 여부']].rename(columns={
+        'title': '곡 제목',
+        'net_votes': '순합산(Net)',
+        'agree': '좋아요',
+        'disagree': '싫어요'
+    })
+
+    st.dataframe(
+        display_song_df,
+        use_container_width=True,
+        hide_index=True
+    )
 
 # -------------------------------------------------------------
 # 11. 📊 전교생 종합 기록실 (클릭 시 정렬 테이블)
@@ -820,7 +840,6 @@ html_table_component = f"""
         renderTable(sortedData);
     }}
 
-    // 초기 정렬: 종합 점수 내림차순
     const initialData = doSort('score', false);
     renderTable(initialData);
 </script>
