@@ -48,7 +48,7 @@ def get_target_student_id():
         pass
     return None
 
-# 2. 커스텀 CSS (밑줄 제거 및 카드 UI)
+# 2. 커스텀 CSS
 st.markdown("""
 <style>
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
@@ -320,7 +320,7 @@ st.markdown("""
         border: 1px solid #e2e8f0;
         border-radius: 10px;
         overflow: hidden;
-        margin-bottom: 16px;
+        margin-bottom: 20px;
     }
 
     .stats-cell {
@@ -420,7 +420,6 @@ try:
         
         cutoff_9th = week_9th_cutoffs.get((row['year'], row['week']), -999)
         # 9위 컷오프 점수보다 엄격히 높은(>) 상위 1~8위권 득표를 하고도 탈락한 곡만 '노래 아님'으로 판정!
-        # (-4점 등 9위 동점 탈락이나 12위 순위 밖 탈락곡은 cutoff 이하이므로 정상 인정됨)
         if row['net_votes'] > cutoff_9th:
             return "노래 아님"
         return None
@@ -441,7 +440,7 @@ def get_user(pid):
 # 공식 순위/통계는 정상 반영곡만 사용
 df_valid_songs = df_all_songs[~df_all_songs['is_excluded']].copy()
 
-# 4. 주차별 환경 보정 및 기여도 점수 산출 (최신 진행주차는 아직 승인 전이므로 기여도 계산에서는 중립 처리)
+# 4. 주차별 환경 보정 및 기여도 점수 산출
 completed_valid = df_valid_songs[~df_valid_songs['is_ongoing']].copy()
 
 week_stats = completed_valid.groupby(['year', 'week'])['net_votes'].agg(['mean', 'std']).reset_index()
@@ -464,7 +463,7 @@ completed_valid['delta_ev'] = completed_valid['ev'] - mean_ev
 
 student_score_map = completed_valid.groupby('proposer')['delta_ev'].sum().round(2).to_dict()
 
-# 5. 1위 / 꼴등 횟수 계산 (마감된 주차만 대상)
+# 5. 1위 / 꼴등 횟수 계산 (마감된 주차 대상)
 top_weekly = completed_valid.sort_values(by=['year', 'week', 'net_votes'], ascending=[True, True, False]).groupby(['year', 'week']).first().reset_index()
 first_cnt_df = top_weekly.groupby('proposer').size().reset_index(name='first_cnt').sort_values(by='first_cnt', ascending=False).reset_index(drop=True)
 
@@ -474,7 +473,7 @@ last_cnt_df = bot_weekly.groupby('proposer').size().reset_index(name='last_cnt')
 first_map = first_cnt_df.set_index('proposer')['first_cnt'].to_dict()
 last_map = last_cnt_df.set_index('proposer')['last_cnt'].to_dict()
 
-# 6. 전교생 기본 지표 집계 (최신 주차의 좋아요/싫어요/순합산은 모두 포함)
+# 6. 전교생 기본 지표 집계 (최신 주차의 좋아요/싫어요/순합산 모두 포함)
 stat_records = []
 grouped = df_valid_songs.groupby('proposer')
 
@@ -565,7 +564,7 @@ def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
         sub_items_html += (
             f"<div class='sub-item'>"
             f"<span class='sub-rank'>{rank_num}</span>"
-            f"<a href='/?student={pid}' target='_top' class='sub-user-link' title='{u_info['name']} 학생 정보 조회'>"
+            f"<a href='?student={pid}' target='_top' class='sub-user-link' title='{u_info['name']} 학생 정보 조회'>"
             f"<img class='sub-avatar' src='{u_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/>"
             f"<span class='sub-name'>{u_info['name']}</span>"
             f"</a>"
@@ -578,7 +577,7 @@ def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
         f"<div class='card-title'>{title}</div>"
         f"<div class='hero-section'>"
         f"<div class='gold-badge'>1</div>"
-        f"<a href='/?student={top1_id}' target='_top' class='hero-link' title='{top1_info['name']} 학생 정보 조회'>"
+        f"<a href='?student={top1_id}' target='_top' class='hero-link' title='{top1_info['name']} 학생 정보 조회'>"
         f"<img class='hero-avatar' src='{top1_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/>"
         f"<div class='hero-name'>{top1_info['name']}</div>"
         f"</a>"
@@ -648,10 +647,8 @@ with tab_dishonor:
     with d4: render_leaderboard_card("🚫 최다 승인 탈락", rej_df, 'rej_cnt', '곡', is_danger=True)
 
 # -------------------------------------------------------------
-# 11. 🔍 학생 개인별 상세 기록 팝업 모달 (Dialog)
+# 11. 🔍 학생 개인별 상세 기록 팝업 모달 함수
 # -------------------------------------------------------------
-dialog_func = st.dialog if hasattr(st, "dialog") else (st.experimental_dialog if hasattr(st, "experimental_dialog") else None)
-
 def render_student_profile_content(target_pid):
     target_u = get_user(target_pid)
     user_all = df_all_songs[df_all_songs['proposer'] == target_pid].copy()
@@ -685,6 +682,7 @@ def render_student_profile_content(target_pid):
 
     score_display_str = f"+{p_score:.2f}" if p_score > 0 else f"{p_score:.2f}"
 
+    # 1) 헤더 및 요약 정보
     st.markdown(f"""
     <div class="player-header">
         <img class="player-avatar" src="{target_u['pfp']}" onerror="this.src='{default_pfp}'"/>
@@ -736,17 +734,7 @@ def render_student_profile_content(target_pid):
     </div>
     """, unsafe_allow_html=True)
 
-    if len(user_valid) > 0:
-        valid_sorted = user_valid.sort_values(by=['year', 'week'], ascending=[True, True]).copy()
-        valid_sorted['주차'] = valid_sorted['year'].astype(str) + "년 " + valid_sorted['week'].astype(str) + "주"
-        chart_data = valid_sorted[['주차', 'net_votes', 'agree', 'disagree']].rename(columns={
-            'net_votes': '순합산(Net)',
-            'agree': '좋아요',
-            'disagree': '싫어요'
-        }).set_index('주차')
-        st.caption("📈 주차별 유효 신청곡 득표 추이")
-        st.line_chart(chart_data)
-
+    # 2) 🎵 정상 반영된 신청곡 목록 (표 먼저 표시)
     st.markdown(f"**🎵 정상 반영된 신청곡 목록 ({len(user_valid)}곡)**")
     if len(user_valid) > 0:
         valid_table = user_valid.sort_values(by=['year', 'week'], ascending=[False, False]).copy()
@@ -765,6 +753,7 @@ def render_student_profile_content(target_pid):
     else:
         st.info("정상 반영된 신청곡이 없습니다.")
 
+    # 3) ⚠️ 통계에서 제외된 신청곡 목록 (표 먼저 표시)
     st.markdown(f"**⚠️ 통계에서 제외된 신청곡 목록 ({len(user_excluded)}곡)**")
     if len(user_excluded) > 0:
         ex_table = user_excluded.sort_values(by=['year', 'week'], ascending=[False, False]).copy()
@@ -782,11 +771,29 @@ def render_student_profile_content(target_pid):
     else:
         st.success("통계에서 제외된 곡이 없습니다. (모든 곡 정상 반영)")
 
-if dialog_func:
-    @dialog_func("🔍 학생 상세 기록실")
-    def student_profile_dialog(target_pid):
+    # 4) 📈 주차별 유효 신청곡 득표 추이 그래프 (요청대로 표 뒤로 이동)
+    if len(user_valid) > 0:
+        st.markdown("<div style='margin-top: 16px;'></div>", unsafe_allow_html=True)
+        valid_sorted = user_valid.sort_values(by=['year', 'week'], ascending=[True, True]).copy()
+        valid_sorted['주차'] = valid_sorted['year'].astype(str) + "년 " + valid_sorted['week'].astype(str) + "주"
+        chart_data = valid_sorted[['주차', 'net_votes', 'agree', 'disagree']].rename(columns={
+            'net_votes': '순합산(Net)',
+            'agree': '좋아요',
+            'disagree': '싫어요'
+        }).set_index('주차')
+        st.caption("📈 주차별 유효 신청곡 득표 추이")
+        st.line_chart(chart_data)
+
+# 다이얼로그 모달 데코레이터 설정 (버전 호환)
+has_dialog = hasattr(st, "dialog") or hasattr(st, "experimental_dialog")
+dialog_decorator = getattr(st, "dialog", getattr(st, "experimental_dialog", None))
+
+if has_dialog:
+    @dialog_decorator("🔍 학생 상세 기록실", width="large")
+    def show_student_profile_dialog(target_pid):
         render_student_profile_content(target_pid)
-        if st.button("닫기", use_container_width=True):
+        if st.button("닫기", use_container_width=True, key="dlg_close_btn"):
+            st.session_state["active_student_pid"] = None
             st.rerun()
 
 all_proposers = df_all_songs['proposer'].dropna().unique().astype(int)
@@ -803,6 +810,19 @@ for pid in all_proposers:
 
 user_options.sort()
 
+# URL 클릭으로 들어온 학생 ID 확인
+url_target_id = get_target_student_id()
+if url_target_id and url_target_id in user_id_to_label:
+    st.session_state["active_student_pid"] = url_target_id
+    # URL 쿼리 파라미터 백그라운드 정리 (다시 다른 사람을 누를 수 있도록)
+    st.markdown("""
+    <script>
+        if (window.top.location.search.includes('student=')) {
+            window.top.history.replaceState({}, document.title, window.top.location.pathname);
+        }
+    </script>
+    """, unsafe_allow_html=True)
+
 # 빈칸 기본 검색창 (placeholder 탑재)
 st.markdown("<div class='section-header'>🔍 학생 검색</div>", unsafe_allow_html=True)
 selected_label = st.selectbox(
@@ -813,30 +833,29 @@ selected_label = st.selectbox(
     key="student_search_box"
 )
 
-# 검색창 선택 시 모달 오픈
 if selected_label:
-    target_pid = user_id_map[selected_label]
-    if dialog_func:
-        student_profile_dialog(target_pid)
-    else:
-        with st.expander(f"📋 {selected_label} 상세 기록", expanded=True):
-            render_student_profile_content(target_pid)
+    st.session_state["active_student_pid"] = user_id_map[selected_label]
 
-# URL 클릭으로 들어왔을 때 모달 오픈 및 쿼리 파라미터 안전 정리
-url_target_id = get_target_student_id()
-if url_target_id and url_target_id in user_id_to_label:
-    try:
-        st.query_params.clear()
-    except Exception:
-        pass
-    if dialog_func:
-        student_profile_dialog(url_target_id)
+# 모달 팝업 열기
+active_pid = st.session_state.get("active_student_pid")
+if active_pid:
+    if has_dialog:
+        show_student_profile_dialog(active_pid)
     else:
-        with st.expander(f"📋 {user_id_to_label[url_target_id]} 상세 기록", expanded=True):
-            render_student_profile_content(url_target_id)
+        # st.dialog 미지원 환경을 위한 상단 고정 팝업 카드 대체재
+        st.markdown("<div style='background:#ffffff; border:2px solid #2563eb; border-radius:16px; padding:24px; box-shadow:0 10px 25px rgba(0,0,0,0.08); margin-bottom:24px;'>", unsafe_allow_html=True)
+        col_t, col_b = st.columns([5, 1])
+        with col_t:
+            st.subheader("🔍 학생 상세 기록실")
+        with col_b:
+            if st.button("✕ 닫기", use_container_width=True, key="fallback_close_btn"):
+                st.session_state["active_student_pid"] = None
+                st.rerun()
+        render_student_profile_content(active_pid)
+        st.markdown("</div>", unsafe_allow_html=True)
 
 # -------------------------------------------------------------
-# 12. 📊 전교생 종합 기록실 (이름 클릭 시 팝업 열림)
+# 12. 📊 전교생 종합 기록실 (이름 클릭 시 팝업 오픈)
 # -------------------------------------------------------------
 st.markdown("<div class='section-header'>📋 전교생 종합 통계 기록실 <span style='font-size: 13px; font-weight: normal; color: #64748b;'>(※ 이름을 클릭하면 팝업으로 상세 기록과 제외곡을 즉시 확인할 수 있습니다)</span></div>", unsafe_allow_html=True)
 
@@ -965,7 +984,7 @@ html_table_component = f"""
             tr.innerHTML = `
                 <td class="${{rankClass}}">${{rankDisplay}}</td>
                 <td>
-                    <a href="/?student=${{row.student_id}}" target="_top" class="col-user-link" title="${{row.name}} 학생 정보 조회">
+                    <a href="?student=${{row.student_id}}" target="_top" class="col-user-link" title="${{row.name}} 학생 정보 조회">
                         <img class="avatar" src="${{row.pfp}}" onerror="this.src='{default_pfp}'"/>
                         <span class="user-name">${{row.name}}</span>
                     </a>
