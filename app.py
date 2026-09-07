@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import math
 import json
+import os
 
 # 1. 페이지 기본 설정
 st.set_page_config(
@@ -12,23 +13,44 @@ st.set_page_config(
     layout="wide"
 )
 
-# URL 쿼리 파라미터 안전 조회
-def get_query_param(key):
+# 화이트리스트(예외 복구) 파일 경로
+WHITELIST_FILE = "whitelist.json"
+
+def load_whitelist():
+    if os.path.exists(WHITELIST_FILE):
+        try:
+            with open(WHITELIST_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_whitelist(ids):
     try:
-        if hasattr(st, "query_params") and key in st.query_params:
-            val = st.query_params[key]
-            return val[0] if isinstance(val, list) else val
+        with open(WHITELIST_FILE, "w", encoding="utf-8") as f:
+            json.dump(ids, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        st.error(f"저장 실패: {e}")
+
+# URL 쿼리 파라미터 안전 조회
+def get_target_student_id():
+    try:
+        if hasattr(st, "query_params") and "student" in st.query_params:
+            val = st.query_params["student"]
+            if isinstance(val, list) and len(val) > 0:
+                return int(val[0])
+            return int(val)
     except Exception:
         pass
     try:
         params = st.experimental_get_query_params()
-        if key in params and len(params[key]) > 0:
-            return params[key][0]
+        if "student" in params and len(params["student"]) > 0:
+            return int(params["student"][0])
     except Exception:
         pass
     return None
 
-# 2. 커스텀 CSS (밑줄 제거 및 호버 시에만 밑줄 표시)
+# 2. 커스텀 CSS
 st.markdown("""
 <style>
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
@@ -45,7 +67,7 @@ st.markdown("""
         background-color: #f4f6f9;
     }
 
-    /* Streamlit 기본 링크 파란 밑줄 원천 무효화 */
+    /* Streamlit 기본 a태그 밑줄 원천 무효화 */
     .stApp a, .stApp a:link, .stApp a:visited {
         text-decoration: none !important;
         color: inherit !important;
@@ -172,9 +194,11 @@ st.markdown("""
         font-size: 12.5px;
         font-weight: 700;
         color: #94a3b8 !important;
-        width: 22px;
+        width: 28px;
+        min-width: 28px;
         text-align: center;
         flex-shrink: 0;
+        white-space: nowrap;
         text-decoration: none !important;
     }
 
@@ -218,7 +242,6 @@ st.markdown("""
         flex-shrink: 0;
     }
 
-    /* 커서 호버 시에만 파란색 밑줄 적용 */
     .hero-link {
         text-decoration: none !important;
         color: inherit !important;
@@ -340,13 +363,16 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 3. 데이터 로딩 및 전처리 (통계 제외 사유 태깅)
+# 3. 데이터 로딩 및 전처리 (18주차 인정 / 최신주 진행중 제외 / 화이트리스트 반영)
 @st.cache_data(ttl=300)
-def load_data():
+def load_raw_data():
     headers = {"User-Agent": "Mozilla/5.0"}
     songs = requests.get("https://sshs.app/api/morningsong", headers=headers).json()
     users = requests.get("https://sshs.app/api/users", headers=headers).json()
-    
+    return songs, users
+
+try:
+    songs, users = load_raw_data()
     df_songs = pd.DataFrame(songs)
     default_pfp = "https://cdn-icons-png.flaticon.com/512/847/847969.png"
     
@@ -370,30 +396,50 @@ def load_data():
     df_songs['disagree'] = pd.to_numeric(df_songs['disagree'], errors='coerce').fillna(0).astype(int)
     df_songs['net_votes'] = df_songs['agree'] - df_songs['disagree']
     df_songs['approved'] = df_songs['approved'].apply(lambda x: True if str(x).lower() in ['true', '1'] else False)
+    df_songs['year'] = pd.to_numeric(df_songs['year'], errors='coerce').fillna(0).astype(int)
+    df_songs['week'] = pd.to_numeric(df_songs['week'], errors='coerce').fillna(0).astype(int)
 
-    # 1) 방학 판별: 승인된 곡이 0건인 주차
+    # 1) 가장 최신 진행 중 주차 판별 (가장 큰 year의 가장 큰 week)
+    latest_year = df_songs['year'].max()
+    latest_week = df_songs[df_songs['year'] == latest_year]['week'].max()
+    is_ongoing = (df_songs['year'] == latest_year) & (df_songs['week'] == latest_week)
+
+    # 2) 방학 주차 판별: 승인된 곡이 0건인 주차
+    # ※ 18주차는 특별 예외로 통계에 포함 (방학 제외 대상 아님), 최신 진행중 주차도 방학 처리에서 제외
     week_approved_cnt = df_songs.groupby(['year', 'week'])['approved'].transform(lambda x: (x == True).sum())
-    is_vacation = (week_approved_cnt == 0)
+    is_vacation = (week_approved_cnt == 0) & (df_songs['week'] != 18) & (~is_ongoing)
 
-    # 2) 밈/비음악 영상 판별: 방학이 아닌 정상 주차 중 상위 9위 이내이나 탈락한 곡
-    df_songs['temp_week_rank'] = df_songs.groupby(['year', 'week'])['net_votes'].rank(ascending=False, method='min')
-    is_meme = (~is_vacation) & (df_songs['temp_week_rank'] <= 9) & (df_songs['approved'] != True)
+    # 3) 주차별 최종 승인 곡들의 최소 순합산 점수 계산
+    approved_only = df_songs[df_songs['approved'] == True]
+    min_approved_per_week = approved_only.groupby(['year', 'week'])['net_votes'].min().to_dict()
 
+    # 4) 관리자 수동 화이트리스트 로드
+    whitelisted_ids = set(load_whitelist())
+
+    # 5) 사유 태깅
     def tag_reason(row):
+        # 관리자 화이트리스트에 들어간 곡은 무조건 정상 인정
+        row_id = row.get('id')
+        if row_id is not None and row_id in whitelisted_ids:
+            return None
+
+        if is_ongoing[row.name]:
+            return "진행 중"
         if is_vacation[row.name]:
             return "방학"
-        elif is_meme[row.name]:
+        if row['approved']:
+            return None
+        
+        min_app_score = min_approved_per_week.get((row['year'], row['week']), None)
+        # 승인된 최소 점수보다 엄격히 높은(>)데 탈락한 곡만 '노래 아님' 판정 (-4점 등 9위 동점 탈락곡은 구제)
+        if min_app_score is not None and row['net_votes'] > min_app_score:
             return "노래 아님"
         return None
 
     df_songs['exclude_reason'] = df_songs.apply(tag_reason, axis=1)
     df_songs['is_excluded'] = df_songs['exclude_reason'].notna()
-    df_songs.drop(columns=['temp_week_rank'], inplace=True, errors='ignore')
+    df_all_songs = df_songs
 
-    return df_songs, user_meta, default_pfp
-
-try:
-    df_all_songs, user_meta, default_pfp = load_data()
 except Exception as e:
     st.error(f"데이터를 불러오지 못했습니다: {e}")
     st.stop()
@@ -403,7 +449,7 @@ def get_user(pid):
         return {"name": "알 수 없음", "full_name": "알 수 없음", "pfp": default_pfp}
     return user_meta.get(int(pid), {"name": f"학생({int(pid)})", "full_name": f"학생({int(pid)})", "pfp": default_pfp})
 
-# 모든 공식 통계 및 랭킹 산출은 '정상 반영곡'만 사용
+# 공식 순위/통계는 정상 반영곡만 사용
 df_valid_songs = df_all_songs[~df_all_songs['is_excluded']].copy()
 
 # 4. 주차별 환경 보정 및 평균 기준 종합 기여도 산출
@@ -525,34 +571,72 @@ def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
         else:
             val_str = f"{val}"
             
-        sub_items_html += f"""
-        <div class='sub-item'>
-            <span class='sub-rank'>{rank_num}</span>
-            <a href='/?student={pid}' target='_top' class='sub-user-link' title='{u_info['name']} 학생 정보 조회'>
-                <img class='sub-avatar' src='{u_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/>
-                <span class='sub-name'>{u_info['name']}</span>
-            </a>
-            <span class='sub-score'>{val_str}{unit}</span>
-        </div>
-        """
+        sub_items_html += (
+            f"<div class='sub-item'>"
+            f"<span class='sub-rank'>{rank_num}</span>"
+            f"<a href='/?student={pid}#player-section' target='_self' class='sub-user-link' title='{u_info['name']} 학생 정보 조회'>"
+            f"<img class='sub-avatar' src='{u_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/>"
+            f"<span class='sub-name'>{u_info['name']}</span>"
+            f"</a>"
+            f"<span class='sub-score'>{val_str}{unit}</span>"
+            f"</div>"
+        )
 
-    card_html = f"""
-    <div class='ranking-card'>
-        <div class='card-title'>{title}</div>
-        <div class='hero-section'>
-            <div class='gold-badge'>1</div>
-            <a href='/?student={top1_id}' target='_top' class='hero-link' title='{top1_info['name']} 학생 정보 조회'>
-                <img class='hero-avatar' src='{top1_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/>
-                <div class='hero-name'>{top1_info['name']}</div>
-            </a>
-            <div class='{score_cls}'>{top1_val_str}{unit}</div>
-        </div>
-        <div class='sub-list'>{sub_items_html}</div>
-    </div>
-    """
+    card_html = (
+        f"<div class='ranking-card'>"
+        f"<div class='card-title'>{title}</div>"
+        f"<div class='hero-section'>"
+        f"<div class='gold-badge'>1</div>"
+        f"<a href='/?student={top1_id}#player-section' target='_self' class='hero-link' title='{top1_info['name']} 학생 정보 조회'>"
+        f"<img class='hero-avatar' src='{top1_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/>"
+        f"<div class='hero-name'>{top1_info['name']}</div>"
+        f"</a>"
+        f"<div class='{score_cls}'>{top1_val_str}{unit}</div>"
+        f"</div>"
+        f"<div class='sub-list'>{sub_items_html}</div>"
+        f"</div>"
+    )
     st.markdown(card_html, unsafe_allow_html=True)
 
-# 9. 상단 리더보드 UI
+# 9. 사이드바 관리자 모드
+st.sidebar.markdown("### ⚙️ 시스템 설정")
+with st.sidebar.expander("🔐 관리자 모드 (예외곡 복구)"):
+    admin_pwd_input = st.text_input("관리자 비밀번호", type="password", key="admin_pwd")
+    # 기본 비번 sshs1234 (Streamlit Secrets에서 재정의 가능)
+    CORRECT_PWD = st.secrets.get("ADMIN_PASSWORD", "sshs1234")
+
+    if admin_pwd_input == CORRECT_PWD:
+        st.success("✅ 관리자 인증 완료")
+        
+        # 현재 제외된 곡 목록 (진행중 제외, 화이트리스트 제외 대상)
+        excluded_candidates = df_all_songs[df_all_songs['exclude_reason'].isin(['노래 아님', '방학'])].copy()
+        
+        cur_whitelist = load_whitelist()
+        st.markdown(f"**현재 복구된 곡:** `{len(cur_whitelist)}곡`")
+        
+        # 선택 가능한 곡 사전 구성
+        option_map = {}
+        for _, r in excluded_candidates.iterrows():
+            u = get_user(r['proposer'])
+            song_id = r.get('id')
+            label = f"[{r['year']}년 {r['week']}주] {r['title']} ({u['name']}) - {r['exclude_reason']}"
+            option_map[label] = song_id
+
+        selected_labels = st.multiselect(
+            "통계에 강제 복구(반영)할 곡을 선택하세요:",
+            options=list(option_map.keys()),
+            default=[k for k, v in option_map.items() if v in cur_whitelist]
+        )
+
+        if st.button("💾 복구 설정 저장하기"):
+            new_whitelist_ids = [option_map[lbl] for lbl in selected_labels if option_map[lbl] is not None]
+            save_whitelist(new_whitelist_ids)
+            st.success("화이트리스트가 저장되었습니다! 새로고침합니다.")
+            st.rerun()
+    elif admin_pwd_input != "":
+        st.error("❌ 비밀번호가 올바르지 않습니다.")
+
+# 10. 상단 리더보드 UI
 st.markdown("""
 <div class="main-title">
     <h1>🏆 SSHS 기상곡 명예의 전당</h1>
@@ -578,7 +662,7 @@ with tab_dishonor:
     with d4: render_leaderboard_card("🚫 최다 승인 탈락", rej_df, 'rej_cnt', '곡', is_danger=True)
 
 # -------------------------------------------------------------
-# 10. 🔍 선수(학생) 개별 기록 검색 및 상세 리포트 카드
+# 11. 🔍 선수(학생) 개별 기록 검색 및 상세 리포트 카드
 # -------------------------------------------------------------
 st.markdown("<div id='player-section' class='section-header'>🔍 학생 개인별 상세 기록 조회</div>", unsafe_allow_html=True)
 
@@ -597,20 +681,17 @@ for pid in all_proposers:
 user_options.sort()
 all_options = ["선택 안 함"] + user_options
 
-# URL 파라미터 연동: 세션 스테이트 동기화
-param_student = get_query_param("student")
-if param_student:
-    try:
-        p_id = int(param_student)
-        if p_id in user_id_to_label:
-            st.session_state["student_search_box"] = user_id_to_label[p_id]
-    except Exception:
-        pass
+target_id = get_target_student_id()
+default_idx = 0
+if target_id and target_id in user_id_to_label:
+    lbl = user_id_to_label[target_id]
+    if lbl in all_options:
+        default_idx = all_options.index(lbl)
 
 selected_label = st.selectbox(
     "이름 또는 교번을 검색하세요 (위 리더보드나 아래 순위표에서 이름을 클릭해도 바로 조회됩니다):",
     options=all_options,
-    key="student_search_box"
+    index=default_idx
 )
 
 if selected_label != "선택 안 함":
@@ -701,7 +782,7 @@ if selected_label != "선택 안 함":
     </div>
     """, unsafe_allow_html=True)
 
-    # 📈 주차별 신청곡 득표 추이 그래프
+    # 📈 주차별 유효 신청곡 득표 추이 그래프
     if len(user_valid) > 0:
         valid_sorted = user_valid.sort_values(by=['year', 'week'], ascending=[True, True]).copy()
         valid_sorted['주차'] = valid_sorted['year'].astype(str) + "년 " + valid_sorted['week'].astype(str) + "주"
@@ -791,7 +872,7 @@ if selected_label != "선택 안 함":
     else:
         st.info("정상 반영된 신청곡이 없습니다.")
 
-    # ⚠️ 통계에서 제외된 신청 기상곡 목록
+    # ⚠️ 통계에서 제외된 신청 기상곡 목록 (진행중 / 방학 / 노래 아님)
     st.markdown(f"<div style='font-size: 16px; font-weight: 700; color: #dc2626; margin: 24px 0 8px 0;'>⚠️ 통계에서 제외된 신청곡 목록 ({len(user_excluded)}곡)</div>", unsafe_allow_html=True)
     
     if len(user_excluded) > 0:
@@ -830,6 +911,7 @@ if selected_label != "선택 안 함":
             tr:hover td {{ background-color: #fffaf5; }}
             .badge-meme {{ display: inline-block; padding: 3px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; background: #fee2e2; color: #b91c1c; }}
             .badge-vac {{ display: inline-block; padding: 3px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; background: #e0f2fe; color: #0369a1; }}
+            .badge-ongoing {{ display: inline-block; padding: 3px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; background: #fef3c7; color: #92400e; }}
         </style>
         </head>
         <body>
@@ -848,9 +930,16 @@ if selected_label != "선택 안 함":
             data.forEach(s => {{
                 const tr = document.createElement('tr');
                 const netStr = s.net > 0 ? '+' + s.net : s.net;
-                const badge = s.reason === '노래 아님' 
-                    ? "<span class='badge-meme'>🚫 노래 아님</span>" 
-                    : "<span class='badge-vac'>🏖️ 방학</span>";
+                let badge = "";
+                if (s.reason === '노래 아님') {{
+                    badge = "<span class='badge-meme'>🚫 노래 아님</span>";
+                }} else if (s.reason === '방학') {{
+                    badge = "<span class='badge-vac'>🏖️ 방학</span>";
+                }} else if (s.reason === '진행 중') {{
+                    badge = "<span class='badge-ongoing'>⏳ 진행 중</span>";
+                }} else {{
+                    badge = `<span class='badge-vac'>${{s.reason}}</span>`;
+                }}
                 tr.innerHTML = `<td>${{s.week}}</td><td style="font-weight:600; color:#475569;">${{s.title}}</td><td>${{netStr}}</td><td>${{s.agree}}</td><td>${{s.disagree}}</td><td style="text-align:center;">${{badge}}</td>`;
                 tbody.appendChild(tr);
             }});
@@ -872,7 +961,7 @@ if selected_label != "선택 안 함":
         st.success("통계에서 제외된 곡이 없습니다. (모든 신청곡이 정상 반영되었습니다)")
 
 # -------------------------------------------------------------
-# 11. 📊 전교생 종합 기록실 (이름 클릭 시 정보창 연동)
+# 12. 📊 전교생 종합 기록실 (이름 클릭 시 정보창 연동)
 # -------------------------------------------------------------
 st.markdown("<div class='section-header'>📋 전교생 종합 통계 기록실 <span style='font-size: 13px; font-weight: normal; color: #64748b;'>(※ 이름을 클릭하면 상단에서 상세 기록과 제외곡을 즉시 확인할 수 있습니다)</span></div>", unsafe_allow_html=True)
 
@@ -902,7 +991,6 @@ html_table_component = f"""
     .col-rank {{ text-align: center; font-weight: 700; color: #94a3b8; width: 45px; }}
     .col-rank.unqualified {{ color: #cbd5e1; font-size: 15px; }}
     
-    /* 사용자 링크 밑줄 방지 및 호버 밑줄 */
     .col-user-link {{ text-align: left; display: flex; align-items: center; gap: 8px; text-decoration: none !important; color: inherit !important; cursor: pointer; }}
     .avatar {{ width: 28px; height: 28px; border-radius: 50%; object-fit: cover; border: 1px solid #e2e8f0; transition: transform 0.15s ease; }}
     .user-name {{ font-weight: 600; color: #0f172a; text-decoration: none !important; transition: color 0.15s ease; }}
@@ -980,10 +1068,6 @@ html_table_component = f"""
         isSyncingBottom = false;
     }});
 
-    function openStudent(id) {{
-        window.top.location.href = '/?student=' + id;
-    }}
-
     function renderTable(sortedData) {{
         const tbody = document.getElementById('tableBody');
         tbody.innerHTML = '';
@@ -1006,10 +1090,10 @@ html_table_component = f"""
             tr.innerHTML = `
                 <td class="${{rankClass}}">${{rankDisplay}}</td>
                 <td>
-                    <div onclick="openStudent('${{row.student_id}}')" class="col-user-link" title="${{row.name}} 학생 정보 조회">
+                    <a href="/?student=${{row.student_id}}#player-section" target="_top" class="col-user-link" title="${{row.name}} 학생 정보 조회">
                         <img class="avatar" src="${{row.pfp}}" onerror="this.src='{default_pfp}'"/>
                         <span class="user-name">${{row.name}}</span>
-                    </div>
+                    </a>
                 </td>
                 <td>${{row.student_id}}</td>
                 <td class="highlight-cell">${{scoreFormatted}}</td>
