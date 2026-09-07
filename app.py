@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import math
 import json
+import time
 import os
 
 # 1. 페이지 기본 설정
@@ -31,19 +32,17 @@ def save_whitelist(ids):
     except Exception as e:
         st.error(f"저장 실패: {e}")
 
-def get_target_student_id():
+def get_query_param(key):
     try:
-        if hasattr(st, "query_params") and "student" in st.query_params:
-            val = st.query_params["student"]
-            if isinstance(val, list) and len(val) > 0:
-                return int(val[0])
-            return int(val)
+        if hasattr(st, "query_params") and key in st.query_params:
+            val = st.query_params[key]
+            return val[0] if isinstance(val, list) else val
     except Exception:
         pass
     try:
         params = st.experimental_get_query_params()
-        if "student" in params and len(params["student"]) > 0:
-            return int(params["student"][0])
+        if key in params and len(params[key]) > 0:
+            return params[key][0]
     except Exception:
         pass
     return None
@@ -260,7 +259,6 @@ st.markdown("""
         margin: 24px 0 12px 0;
     }
 
-    /* 팝업 모달 내부 컴포넌트 */
     .player-header {
         display: flex;
         align-items: center;
@@ -397,7 +395,7 @@ try:
     def get_9th_cutoff(g):
         sorted_nets = g['net_votes'].sort_values(ascending=False).values
         if len(sorted_nets) >= 9:
-            return sorted_nets[8]  # 9번째 곡의 순합산 점수
+            return sorted_nets[8]
         return sorted_nets[-1] if len(sorted_nets) > 0 else -999
 
     week_9th_cutoffs = df_songs.groupby(['year', 'week']).apply(get_9th_cutoff).to_dict()
@@ -416,7 +414,7 @@ try:
         if row['approved']:
             return None
         if row['is_ongoing']:
-            return None  # 최신 진행주는 탈락 처리하지 않고 정상 누적
+            return None
         
         cutoff_9th = week_9th_cutoffs.get((row['year'], row['week']), -999)
         # 9위 컷오프 점수보다 엄격히 높은(>) 상위 1~8위권 득표를 하고도 탈락한 곡만 '노래 아님'으로 판정!
@@ -528,6 +526,8 @@ net_low_df = df_valid_songs.groupby('proposer')['net_votes'].sum().reset_index()
 rej_df = completed_valid[completed_valid['approved'] == False].groupby('proposer').size().reset_index(name='rej_cnt').sort_values(by='rej_cnt', ascending=False).reset_index(drop=True)
 
 # 8. 상단 카드 렌더링 함수
+render_timestamp = int(time.time() * 1000)
+
 def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
     if df_rank.empty:
         st.markdown(f"<div class='ranking-card'><div class='card-title'>{title}</div><p style='color:#94a3b8;'>기록 없음</p></div>", unsafe_allow_html=True)
@@ -564,7 +564,7 @@ def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
         sub_items_html += (
             f"<div class='sub-item'>"
             f"<span class='sub-rank'>{rank_num}</span>"
-            f"<a href='?student={pid}' target='_top' class='sub-user-link' title='{u_info['name']} 학생 정보 조회'>"
+            f"<a href='?student={pid}&t={render_timestamp}' target='_self' class='sub-user-link' title='{u_info['name']} 학생 정보 조회'>"
             f"<img class='sub-avatar' src='{u_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/>"
             f"<span class='sub-name'>{u_info['name']}</span>"
             f"</a>"
@@ -577,7 +577,7 @@ def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
         f"<div class='card-title'>{title}</div>"
         f"<div class='hero-section'>"
         f"<div class='gold-badge'>1</div>"
-        f"<a href='?student={top1_id}' target='_top' class='hero-link' title='{top1_info['name']} 학생 정보 조회'>"
+        f"<a href='?student={top1_id}&t={render_timestamp}' target='_self' class='hero-link' title='{top1_info['name']} 학생 정보 조회'>"
         f"<img class='hero-avatar' src='{top1_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/>"
         f"<div class='hero-name'>{top1_info['name']}</div>"
         f"</a>"
@@ -682,7 +682,7 @@ def render_student_profile_content(target_pid):
 
     score_display_str = f"+{p_score:.2f}" if p_score > 0 else f"{p_score:.2f}"
 
-    # 1) 헤더 및 요약 정보
+    # 1) 헤더 및 종합 요약 지표
     st.markdown(f"""
     <div class="player-header">
         <img class="player-avatar" src="{target_u['pfp']}" onerror="this.src='{default_pfp}'"/>
@@ -734,7 +734,7 @@ def render_student_profile_content(target_pid):
     </div>
     """, unsafe_allow_html=True)
 
-    # 2) 🎵 정상 반영된 신청곡 목록 (표 먼저 표시)
+    # 2) 🎵 정상 반영된 신청곡 목록
     st.markdown(f"**🎵 정상 반영된 신청곡 목록 ({len(user_valid)}곡)**")
     if len(user_valid) > 0:
         valid_table = user_valid.sort_values(by=['year', 'week'], ascending=[False, False]).copy()
@@ -753,7 +753,7 @@ def render_student_profile_content(target_pid):
     else:
         st.info("정상 반영된 신청곡이 없습니다.")
 
-    # 3) ⚠️ 통계에서 제외된 신청곡 목록 (표 먼저 표시)
+    # 3) ⚠️ 통계에서 제외된 신청곡 목록
     st.markdown(f"**⚠️ 통계에서 제외된 신청곡 목록 ({len(user_excluded)}곡)**")
     if len(user_excluded) > 0:
         ex_table = user_excluded.sort_values(by=['year', 'week'], ascending=[False, False]).copy()
@@ -771,7 +771,7 @@ def render_student_profile_content(target_pid):
     else:
         st.success("통계에서 제외된 곡이 없습니다. (모든 곡 정상 반영)")
 
-    # 4) 📈 주차별 유효 신청곡 득표 추이 그래프 (요청대로 표 뒤로 이동)
+    # 4) 📈 주차별 유효 신청곡 득표 추이 선 그래프 (표 뒤로 이동 완료)
     if len(user_valid) > 0:
         st.markdown("<div style='margin-top: 16px;'></div>", unsafe_allow_html=True)
         valid_sorted = user_valid.sort_values(by=['year', 'week'], ascending=[True, True]).copy()
@@ -784,7 +784,6 @@ def render_student_profile_content(target_pid):
         st.caption("📈 주차별 유효 신청곡 득표 추이")
         st.line_chart(chart_data)
 
-# 다이얼로그 모달 데코레이터 설정 (버전 호환)
 has_dialog = hasattr(st, "dialog") or hasattr(st, "experimental_dialog")
 dialog_decorator = getattr(st, "dialog", getattr(st, "experimental_dialog", None))
 
@@ -792,9 +791,6 @@ if has_dialog:
     @dialog_decorator("🔍 학생 상세 기록실", width="large")
     def show_student_profile_dialog(target_pid):
         render_student_profile_content(target_pid)
-        if st.button("닫기", use_container_width=True, key="dlg_close_btn"):
-            st.session_state["active_student_pid"] = None
-            st.rerun()
 
 all_proposers = df_all_songs['proposer'].dropna().unique().astype(int)
 user_options = []
@@ -810,20 +806,22 @@ for pid in all_proposers:
 
 user_options.sort()
 
-# URL 클릭으로 들어온 학생 ID 확인
-url_target_id = get_target_student_id()
-if url_target_id and url_target_id in user_id_to_label:
-    st.session_state["active_student_pid"] = url_target_id
-    # URL 쿼리 파라미터 백그라운드 정리 (다시 다른 사람을 누를 수 있도록)
-    st.markdown("""
-    <script>
-        if (window.top.location.search.includes('student=')) {
-            window.top.history.replaceState({}, document.title, window.top.location.pathname);
-        }
-    </script>
-    """, unsafe_allow_html=True)
+# URL 클릭 토큰 감지
+param_student = get_query_param("student")
+param_token = get_query_param("t")
 
-# 빈칸 기본 검색창 (placeholder 탑재)
+if param_student:
+    try:
+        p_id = int(param_student)
+        if p_id in user_id_to_label:
+            # 새로운 클릭 토큰인 경우에만 오픈 트리거
+            if st.session_state.get("last_seen_token") != param_token:
+                st.session_state["last_seen_token"] = param_token
+                st.session_state["modal_target_pid"] = p_id
+    except Exception:
+        pass
+
+# 빈칸 기본 검색창
 st.markdown("<div class='section-header'>🔍 학생 검색</div>", unsafe_allow_html=True)
 selected_label = st.selectbox(
     "이름 또는 교번을 검색하세요 (선택 시 팝업 창으로 상세 기록이 열립니다):",
@@ -834,25 +832,17 @@ selected_label = st.selectbox(
 )
 
 if selected_label:
-    st.session_state["active_student_pid"] = user_id_map[selected_label]
+    st.session_state["modal_target_pid"] = user_id_map[selected_label]
 
-# 모달 팝업 열기
-active_pid = st.session_state.get("active_student_pid")
-if active_pid:
+# 팝업 다이얼로그 호출
+active_modal_pid = st.session_state.get("modal_target_pid")
+if active_modal_pid:
+    st.session_state["modal_target_pid"] = None
     if has_dialog:
-        show_student_profile_dialog(active_pid)
+        show_student_profile_dialog(active_modal_pid)
     else:
-        # st.dialog 미지원 환경을 위한 상단 고정 팝업 카드 대체재
-        st.markdown("<div style='background:#ffffff; border:2px solid #2563eb; border-radius:16px; padding:24px; box-shadow:0 10px 25px rgba(0,0,0,0.08); margin-bottom:24px;'>", unsafe_allow_html=True)
-        col_t, col_b = st.columns([5, 1])
-        with col_t:
-            st.subheader("🔍 학생 상세 기록실")
-        with col_b:
-            if st.button("✕ 닫기", use_container_width=True, key="fallback_close_btn"):
-                st.session_state["active_student_pid"] = None
-                st.rerun()
-        render_student_profile_content(active_pid)
-        st.markdown("</div>", unsafe_allow_html=True)
+        st.info(f"📋 {get_user(active_modal_pid)['name']} 학생 상세 기록")
+        render_student_profile_content(active_modal_pid)
 
 # -------------------------------------------------------------
 # 12. 📊 전교생 종합 기록실 (이름 클릭 시 팝업 오픈)
@@ -962,6 +952,19 @@ html_table_component = f"""
         isSyncingBottom = false;
     }});
 
+    function openStudent(id) {{
+        const targetUrl = '?student=' + id + '&t=' + Date.now();
+        try {{
+            window.parent.location.href = targetUrl;
+        }} catch(e) {{
+            try {{
+                window.top.location.href = targetUrl;
+            }} catch(e2) {{
+                window.location.href = targetUrl;
+            }}
+        }}
+    }}
+
     function renderTable(sortedData) {{
         const tbody = document.getElementById('tableBody');
         tbody.innerHTML = '';
@@ -984,10 +987,10 @@ html_table_component = f"""
             tr.innerHTML = `
                 <td class="${{rankClass}}">${{rankDisplay}}</td>
                 <td>
-                    <a href="?student=${{row.student_id}}" target="_top" class="col-user-link" title="${{row.name}} 학생 정보 조회">
+                    <div onclick="openStudent(${{row.student_id}})" class="col-user-link" title="${{row.name}} 학생 정보 조회">
                         <img class="avatar" src="${{row.pfp}}" onerror="this.src='{default_pfp}'"/>
                         <span class="user-name">${{row.name}}</span>
-                    </a>
+                    </div>
                 </td>
                 <td>${{row.student_id}}</td>
                 <td class="highlight-cell">${{scoreFormatted}}</td>
