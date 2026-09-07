@@ -435,59 +435,73 @@ def get_user(pid):
         return {"name": "알 수 없음", "full_name": "알 수 없음", "pfp": default_pfp}
     return user_meta.get(int(pid), {"name": f"학생({int(pid)})", "full_name": f"학생({int(pid)})", "pfp": default_pfp})
 
-# 공식 순위/통계는 정상 반영곡만 사용
-df_valid_songs = df_all_songs[~df_all_songs['is_excluded']].copy()
+# 1. df_scoring_songs (순수 음악 곡): 좋아요, 싫어요, 순합산, 종합기여도(WAR), 주별 1위/꼴등 계산에 사용
+df_scoring_songs = df_all_songs[df_all_songs['exclude_reason'].isna()].copy()
 
-# 4. 주차별 환경 보정 및 기여도 점수 산출
-completed_valid = df_valid_songs[~df_valid_songs['is_ongoing']].copy()
+# 2. df_attempts (신청 시도 곡: 순수 음악 + '노래 아님' 포함 / 단, 방학은 방송 자체가 없었으므로 제외):
+#    기상곡 신청 횟수(total_songs), 승인율(approval_rate), 승인 실패수(rej_cnt) 계산에 사용
+df_attempts = df_all_songs[df_all_songs['exclude_reason'] != '방학'].copy()
 
-week_stats = completed_valid.groupby(['year', 'week'])['net_votes'].agg(['mean', 'std']).reset_index()
+# 4. 주차별 환경 보정 및 기여도 점수 산출 (마감된 순수 음악 곡 대상)
+completed_scoring = df_scoring_songs[~df_scoring_songs['is_ongoing']].copy()
+
+week_stats = completed_scoring.groupby(['year', 'week'])['net_votes'].agg(['mean', 'std']).reset_index()
 week_stats.rename(columns={'mean': 'week_mean', 'std': 'week_std'}, inplace=True)
-completed_valid = pd.merge(completed_valid, week_stats, on=['year', 'week'], how='left')
-completed_valid['week_std'] = completed_valid['week_std'].fillna(0)
+completed_scoring = pd.merge(completed_scoring, week_stats, on=['year', 'week'], how='left')
+completed_scoring['week_std'] = completed_scoring['week_std'].fillna(0)
 
-completed_valid['z_week'] = np.where(
-    completed_valid['week_std'] > 0,
-    (completed_valid['net_votes'] - completed_valid['week_mean']) / completed_valid['week_std'],
+completed_scoring['z_week'] = np.where(
+    completed_scoring['week_std'] > 0,
+    (completed_scoring['net_votes'] - completed_scoring['week_mean']) / completed_scoring['week_std'],
     0.0
 )
 
 def norm_cdf(z):
     return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
 
-completed_valid['ev'] = 0.60 * (completed_valid['approved'] == True).astype(float) + 0.40 * completed_valid['z_week'].apply(norm_cdf)
-mean_ev = float(completed_valid['ev'].mean()) if len(completed_valid) > 0 else 0.0
-completed_valid['delta_ev'] = completed_valid['ev'] - mean_ev
+completed_scoring['ev'] = 0.60 * (completed_scoring['approved'] == True).astype(float) + 0.40 * completed_scoring['z_week'].apply(norm_cdf)
+mean_ev = float(completed_scoring['ev'].mean()) if len(completed_scoring) > 0 else 0.0
+completed_scoring['delta_ev'] = completed_scoring['ev'] - mean_ev
 
-student_score_map = completed_valid.groupby('proposer')['delta_ev'].sum().round(2).to_dict()
+student_score_map = completed_scoring.groupby('proposer')['delta_ev'].sum().round(2).to_dict()
 
-# 5. 1위 / 꼴등 횟수 계산 (마감된 주차 대상)
-top_weekly = completed_valid.sort_values(by=['year', 'week', 'net_votes'], ascending=[True, True, False]).groupby(['year', 'week']).first().reset_index()
+# 5. 1위 / 꼴등 횟수 계산 (마감된 순수 음악 곡 대상)
+top_weekly = completed_scoring.sort_values(by=['year', 'week', 'net_votes'], ascending=[True, True, False]).groupby(['year', 'week']).first().reset_index()
 first_cnt_df = top_weekly.groupby('proposer').size().reset_index(name='first_cnt').sort_values(by='first_cnt', ascending=False).reset_index(drop=True)
 
-bot_weekly = completed_valid.sort_values(by=['year', 'week', 'net_votes'], ascending=[True, True, True]).groupby(['year', 'week']).first().reset_index()
+bot_weekly = completed_scoring.sort_values(by=['year', 'week', 'net_votes'], ascending=[True, True, True]).groupby(['year', 'week']).first().reset_index()
 last_cnt_df = bot_weekly.groupby('proposer').size().reset_index(name='last_cnt').sort_values(by='last_cnt', ascending=False).reset_index(drop=True)
 
 first_map = first_cnt_df.set_index('proposer')['first_cnt'].to_dict()
 last_map = last_cnt_df.set_index('proposer')['last_cnt'].to_dict()
 
-# 6. 전교생 기본 지표 집계 (최신 주차의 좋아요/싫어요/순합산 모두 포함)
+# 6. 전교생 기본 지표 집계 ('노래 아님' 곡을 신청 횟수 및 승인율, 탈락 횟수에 반영)
 stat_records = []
-grouped = df_valid_songs.groupby('proposer')
+all_proposers_list = df_attempts['proposer'].dropna().unique().astype(int)
 
-for pid, group in grouped:
+# 최다 승인 탈락 계산: 마감된 모든 시도(순수 음악 + '노래 아님') 중 approved == False 인 곡 카운트
+completed_attempts = df_attempts[~df_attempts['is_ongoing']].copy()
+rej_df = completed_attempts[completed_attempts['approved'] == False].groupby('proposer').size().reset_index(name='rej_cnt').sort_values(by='rej_cnt', ascending=False).reset_index(drop=True)
+
+for pid in all_proposers_list:
     u = get_user(pid)
-    total_songs = len(group)
-    total_agree = int(group['agree'].sum())
-    total_disagree = int(group['disagree'].sum())
-    total_net = int(group['net_votes'].sum())
+    user_attempts = df_attempts[df_attempts['proposer'] == pid]
+    user_scoring = df_scoring_songs[df_scoring_songs['proposer'] == pid]
     
-    avg_agree = round(float(group['agree'].mean()), 2)
-    avg_disagree = round(float(group['disagree'].mean()), 2)
-    avg_net = round(float(group['net_votes'].mean()), 2)
+    # 🌟 '노래 아님'을 포함한 전체 공식 신청 횟수
+    total_songs = len(user_attempts)
+    approved_count = int((user_attempts['approved'] == True).sum())
     
-    approved_count = int((group['approved'] == True).sum())
-    approval_rate = round((approved_count / total_songs) * 100, 1)
+    # 🌟 '노래 아님' 탈락이 분모에 반영되어 승인율이 공정하게 계산됨
+    approval_rate = round((approved_count / total_songs) * 100, 1) if total_songs > 0 else 0.0
+    
+    # 득표 관련 수치는 밈 왜곡 방지를 위해 순수 음악 곡 기준으로 산출
+    total_agree = int(user_scoring['agree'].sum())
+    total_disagree = int(user_scoring['disagree'].sum())
+    total_net = int(user_scoring['net_votes'].sum())
+    avg_agree = round(float(user_scoring['agree'].mean()), 2) if len(user_scoring) > 0 else 0.0
+    avg_disagree = round(float(user_scoring['disagree'].mean()), 2) if len(user_scoring) > 0 else 0.0
+    avg_net = round(float(user_scoring['net_votes'].mean()), 2) if len(user_scoring) > 0 else 0.0
     
     first_cnt = first_map.get(pid, 0)
     last_cnt = last_map.get(pid, 0)
@@ -517,13 +531,12 @@ df_base_stat = pd.DataFrame(stat_records)
 
 # 7. 상단 랭킹 데이터 집계
 score_rank_df = df_base_stat[df_base_stat['is_qualified'] == 1].sort_values(by='score', ascending=False).reset_index(drop=True)
-likes_df = df_valid_songs.groupby('proposer')['agree'].sum().reset_index().sort_values(by='agree', ascending=False).reset_index(drop=True)
-net_high_df = df_valid_songs.groupby('proposer')['net_votes'].sum().reset_index().sort_values(by='net_votes', ascending=False).reset_index(drop=True)
-app_df = df_valid_songs[df_valid_songs['approved'] == True].groupby('proposer').size().reset_index(name='app_cnt').sort_values(by='app_cnt', ascending=False).reset_index(drop=True)
+likes_df = df_scoring_songs.groupby('proposer')['agree'].sum().reset_index().sort_values(by='agree', ascending=False).reset_index(drop=True)
+net_high_df = df_scoring_songs.groupby('proposer')['net_votes'].sum().reset_index().sort_values(by='net_votes', ascending=False).reset_index(drop=True)
+app_df = df_scoring_songs[df_scoring_songs['approved'] == True].groupby('proposer').size().reset_index(name='app_cnt').sort_values(by='app_cnt', ascending=False).reset_index(drop=True)
 
-dislikes_df = df_valid_songs.groupby('proposer')['disagree'].sum().reset_index().sort_values(by='disagree', ascending=False).reset_index(drop=True)
-net_low_df = df_valid_songs.groupby('proposer')['net_votes'].sum().reset_index().sort_values(by='net_votes', ascending=True).reset_index(drop=True)
-rej_df = completed_valid[completed_valid['approved'] == False].groupby('proposer').size().reset_index(name='rej_cnt').sort_values(by='rej_cnt', ascending=False).reset_index(drop=True)
+dislikes_df = df_scoring_songs.groupby('proposer')['disagree'].sum().reset_index().sort_values(by='disagree', ascending=False).reset_index(drop=True)
+net_low_df = df_scoring_songs.groupby('proposer')['net_votes'].sum().reset_index().sort_values(by='net_votes', ascending=True).reset_index(drop=True)
 
 # 8. 상단 카드 렌더링 함수
 render_timestamp = int(time.time() * 1000)
@@ -652,18 +665,22 @@ with tab_dishonor:
 def render_student_profile_content(target_pid):
     target_u = get_user(target_pid)
     user_all = df_all_songs[df_all_songs['proposer'] == target_pid].copy()
-    user_valid = user_all[~user_all['is_excluded']].copy()
+    user_scoring = df_scoring_songs[df_scoring_songs['proposer'] == target_pid].copy()
+    user_attempts = df_attempts[df_attempts['proposer'] == target_pid].copy()
     user_excluded = user_all[user_all['is_excluded']].copy()
     
-    p_total_songs = len(user_valid)
-    p_approved = int((user_valid['approved'] == True).sum())
+    # 🌟 '노래 아님' 포함 신청 횟수 및 승인율 산출
+    p_total_songs = len(user_attempts)
+    p_approved = int((user_attempts['approved'] == True).sum())
     p_rate = round((p_approved / p_total_songs) * 100, 1) if p_total_songs > 0 else 0.0
-    p_net = int(user_valid['net_votes'].sum())
-    p_agree = int(user_valid['agree'].sum())
-    p_disagree = int(user_valid['disagree'].sum())
-    p_avg_net = round(float(user_valid['net_votes'].mean()), 2) if p_total_songs > 0 else 0.0
-    p_avg_agree = round(float(user_valid['agree'].mean()), 2) if p_total_songs > 0 else 0.0
-    p_avg_disagree = round(float(user_valid['disagree'].mean()), 2) if p_total_songs > 0 else 0.0
+    
+    # 순수 음악 곡 기준 득표 수치 산출
+    p_net = int(user_scoring['net_votes'].sum())
+    p_agree = int(user_scoring['agree'].sum())
+    p_disagree = int(user_scoring['disagree'].sum())
+    p_avg_net = round(float(user_scoring['net_votes'].mean()), 2) if len(user_scoring) > 0 else 0.0
+    p_avg_agree = round(float(user_scoring['agree'].mean()), 2) if len(user_scoring) > 0 else 0.0
+    p_avg_disagree = round(float(user_scoring['disagree'].mean()), 2) if len(user_scoring) > 0 else 0.0
     
     row_stat = df_base_stat[df_base_stat['student_id'] == target_pid]
     p_score = row_stat['score'].iloc[0] if not row_stat.empty else 0.0
@@ -682,7 +699,7 @@ def render_student_profile_content(target_pid):
 
     score_display_str = f"+{p_score:.2f}" if p_score > 0 else f"{p_score:.2f}"
 
-    # 1) 헤더 및 종합 요약 지표
+    # 1) 상단 요약 카드
     st.markdown(f"""
     <div class="player-header">
         <img class="player-avatar" src="{target_u['pfp']}" onerror="this.src='{default_pfp}'"/>
@@ -735,9 +752,9 @@ def render_student_profile_content(target_pid):
     """, unsafe_allow_html=True)
 
     # 2) 🎵 정상 반영된 신청곡 목록
-    st.markdown(f"**🎵 정상 반영된 신청곡 목록 ({len(user_valid)}곡)**")
-    if len(user_valid) > 0:
-        valid_table = user_valid.sort_values(by=['year', 'week'], ascending=[False, False]).copy()
+    st.markdown(f"**🎵 정상 반영된 신청곡 목록 ({len(user_scoring)}곡)**")
+    if len(user_scoring) > 0:
+        valid_table = user_scoring.sort_values(by=['year', 'week'], ascending=[False, False]).copy()
         valid_items = []
         for _, s in valid_table.iterrows():
             badge_str = "⏳ 진행 중" if s.get('is_ongoing') else ("✅ 최종 승인" if s.get('approved') else "❌ 탈락")
@@ -753,8 +770,8 @@ def render_student_profile_content(target_pid):
     else:
         st.info("정상 반영된 신청곡이 없습니다.")
 
-    # 3) ⚠️ 통계에서 제외된 신청곡 목록
-    st.markdown(f"**⚠️ 통계에서 제외된 신청곡 목록 ({len(user_excluded)}곡)**")
+    # 3) ⚠️ 통계에서 제외된 신청곡 목록 ('노래 아님' 곡은 신청 및 실패 횟수에 포함됨을 안내)
+    st.markdown(f"**⚠️ 통계에서 제외된 신청곡 목록 ({len(user_excluded)}곡)** <span style='font-size: 12px; color: #64748b;'>(※ '노래 아님' 곡은 신청 횟수 및 실패 횟수에 합산 반영됨)</span>", unsafe_allow_html=True)
     if len(user_excluded) > 0:
         ex_table = user_excluded.sort_values(by=['year', 'week'], ascending=[False, False]).copy()
         ex_items = []
@@ -771,10 +788,10 @@ def render_student_profile_content(target_pid):
     else:
         st.success("통계에서 제외된 곡이 없습니다. (모든 곡 정상 반영)")
 
-    # 4) 📈 주차별 유효 신청곡 득표 추이 선 그래프 (표 뒤로 이동 완료)
-    if len(user_valid) > 0:
+    # 4) 📈 주차별 유효 신청곡 득표 추이 선 그래프 (표 뒤로 배치)
+    if len(user_scoring) > 0:
         st.markdown("<div style='margin-top: 16px;'></div>", unsafe_allow_html=True)
-        valid_sorted = user_valid.sort_values(by=['year', 'week'], ascending=[True, True]).copy()
+        valid_sorted = user_scoring.sort_values(by=['year', 'week'], ascending=[True, True]).copy()
         valid_sorted['주차'] = valid_sorted['year'].astype(str) + "년 " + valid_sorted['week'].astype(str) + "주"
         chart_data = valid_sorted[['주차', 'net_votes', 'agree', 'disagree']].rename(columns={
             'net_votes': '순합산(Net)',
@@ -792,12 +809,11 @@ if has_dialog:
     def show_student_profile_dialog(target_pid):
         render_student_profile_content(target_pid)
 
-all_proposers = df_all_songs['proposer'].dropna().unique().astype(int)
 user_options = []
 user_id_map = {}
 user_id_to_label = {}
 
-for pid in all_proposers:
+for pid in all_proposers_list:
     u = get_user(pid)
     label = f"{u['name']} ({pid})"
     user_options.append(label)
@@ -814,14 +830,13 @@ if param_student:
     try:
         p_id = int(param_student)
         if p_id in user_id_to_label:
-            # 새로운 클릭 토큰인 경우에만 오픈 트리거
             if st.session_state.get("last_seen_token") != param_token:
                 st.session_state["last_seen_token"] = param_token
                 st.session_state["modal_target_pid"] = p_id
     except Exception:
         pass
 
-# 빈칸 기본 검색창
+# 빈칸 기본 검색창 (Placeholder)
 st.markdown("<div class='section-header'>🔍 학생 검색</div>", unsafe_allow_html=True)
 selected_label = st.selectbox(
     "이름 또는 교번을 검색하세요 (선택 시 팝업 창으로 상세 기록이 열립니다):",
