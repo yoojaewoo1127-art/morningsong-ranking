@@ -13,7 +13,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# 화이트리스트(예외 복구) 파일 경로
 WHITELIST_FILE = "whitelist.json"
 
 def load_whitelist():
@@ -32,7 +31,6 @@ def save_whitelist(ids):
     except Exception as e:
         st.error(f"저장 실패: {e}")
 
-# URL 쿼리 파라미터 안전 조회
 def get_target_student_id():
     try:
         if hasattr(st, "query_params") and "student" in st.query_params:
@@ -50,7 +48,7 @@ def get_target_student_id():
         pass
     return None
 
-# 2. 커스텀 CSS
+# 2. 커스텀 CSS (밑줄 제거 및 카드 UI)
 st.markdown("""
 <style>
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
@@ -67,7 +65,6 @@ st.markdown("""
         background-color: #f4f6f9;
     }
 
-    /* Streamlit 기본 a태그 밑줄 원천 무효화 */
     .stApp a, .stApp a:link, .stApp a:visited {
         text-decoration: none !important;
         color: inherit !important;
@@ -88,7 +85,6 @@ st.markdown("""
         font-size: 14px;
     }
 
-    /* 카드 컨테이너 */
     .ranking-card {
         background: #ffffff;
         border-radius: 14px;
@@ -164,7 +160,6 @@ st.markdown("""
         color: #ef4444;
     }
 
-    /* 2위 이하 리스트 (스크롤바) */
     .sub-list {
         margin-top: 8px;
         display: flex;
@@ -265,22 +260,12 @@ st.markdown("""
         margin: 24px 0 12px 0;
     }
 
-    /* 선수 상세 기록 카드 UI */
-    .player-card {
-        background: #ffffff;
-        border-radius: 16px;
-        border: 1px solid #e2e8f0;
-        box-shadow: 0 4px 14px rgba(0,0,0,0.05);
-        padding: 24px;
-        margin-top: 10px;
-        margin-bottom: 20px;
-    }
-
+    /* 팝업 모달 내부 컴포넌트 */
     .player-header {
         display: flex;
         align-items: center;
         gap: 16px;
-        margin-bottom: 18px;
+        margin-bottom: 16px;
     }
 
     .player-avatar {
@@ -308,13 +293,13 @@ st.markdown("""
         background: #0f172a;
         color: #ffffff;
         border-radius: 10px;
-        padding: 12px 20px;
+        padding: 10px 16px;
         display: flex;
         align-items: center;
-        gap: 16px;
+        gap: 14px;
         flex-wrap: wrap;
-        margin-bottom: 20px;
-        font-size: 13.5px;
+        margin-bottom: 16px;
+        font-size: 13px;
     }
 
     .badge-bar-item {
@@ -335,24 +320,24 @@ st.markdown("""
         border: 1px solid #e2e8f0;
         border-radius: 10px;
         overflow: hidden;
-        margin-bottom: 20px;
+        margin-bottom: 16px;
     }
 
     .stats-cell {
         background: #ffffff;
-        padding: 16px 10px;
+        padding: 12px 8px;
         text-align: center;
     }
 
     .stats-cell-label {
-        font-size: 12.5px;
+        font-size: 12px;
         color: #64748b;
         font-weight: 600;
         margin-bottom: 4px;
     }
 
     .stats-cell-val {
-        font-size: 18px;
+        font-size: 17px;
         font-weight: 800;
         color: #0f172a;
     }
@@ -363,7 +348,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 3. 데이터 로딩 및 전처리 (18주차 인정 / 최신주 진행중 제외 / 화이트리스트 반영)
+# 3. 데이터 로딩 및 정밀 판정 전처리
 @st.cache_data(ttl=300)
 def load_raw_data():
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -399,40 +384,44 @@ try:
     df_songs['year'] = pd.to_numeric(df_songs['year'], errors='coerce').fillna(0).astype(int)
     df_songs['week'] = pd.to_numeric(df_songs['week'], errors='coerce').fillna(0).astype(int)
 
-    # 1) 가장 최신 진행 중 주차 판별 (가장 큰 year의 가장 큰 week)
+    # 1) 가장 최신 진행 중 주차 판별 (누적 투표수는 정상 반영)
     latest_year = df_songs['year'].max()
     latest_week = df_songs[df_songs['year'] == latest_year]['week'].max()
-    is_ongoing = (df_songs['year'] == latest_year) & (df_songs['week'] == latest_week)
+    df_songs['is_ongoing'] = (df_songs['year'] == latest_year) & (df_songs['week'] == latest_week)
 
-    # 2) 방학 주차 판별: 승인된 곡이 0건인 주차
-    # ※ 18주차는 특별 예외로 통계에 포함 (방학 제외 대상 아님), 최신 진행중 주차도 방학 처리에서 제외
+    # 2) 방학 주차 판별: 승인 곡수 0건인 주차 (※ 18주차는 특별 예외로 통계 포함, 최신 진행주도 제외)
     week_approved_cnt = df_songs.groupby(['year', 'week'])['approved'].transform(lambda x: (x == True).sum())
-    is_vacation = (week_approved_cnt == 0) & (df_songs['week'] != 18) & (~is_ongoing)
+    is_vacation = (week_approved_cnt == 0) & (df_songs['week'] != 18) & (~df_songs['is_ongoing'])
 
-    # 3) 주차별 최종 승인 곡들의 최소 순합산 점수 계산
-    approved_only = df_songs[df_songs['approved'] == True]
-    min_approved_per_week = approved_only.groupby(['year', 'week'])['net_votes'].min().to_dict()
+    # 3) 주차별 상위 9위 컷오프 점수 계산
+    def get_9th_cutoff(g):
+        sorted_nets = g['net_votes'].sort_values(ascending=False).values
+        if len(sorted_nets) >= 9:
+            return sorted_nets[8]  # 9번째 곡의 순합산 점수
+        return sorted_nets[-1] if len(sorted_nets) > 0 else -999
+
+    week_9th_cutoffs = df_songs.groupby(['year', 'week']).apply(get_9th_cutoff).to_dict()
 
     # 4) 관리자 수동 화이트리스트 로드
     whitelisted_ids = set(load_whitelist())
 
-    # 5) 사유 태깅
+    # 5) '노래 아님' 정밀 판정 로직
     def tag_reason(row):
-        # 관리자 화이트리스트에 들어간 곡은 무조건 정상 인정
         row_id = row.get('id')
         if row_id is not None and row_id in whitelisted_ids:
             return None
 
-        if is_ongoing[row.name]:
-            return "진행 중"
         if is_vacation[row.name]:
             return "방학"
         if row['approved']:
             return None
+        if row['is_ongoing']:
+            return None  # 최신 진행주는 탈락 처리하지 않고 정상 누적
         
-        min_app_score = min_approved_per_week.get((row['year'], row['week']), None)
-        # 승인된 최소 점수보다 엄격히 높은(>)데 탈락한 곡만 '노래 아님' 판정 (-4점 등 9위 동점 탈락곡은 구제)
-        if min_app_score is not None and row['net_votes'] > min_app_score:
+        cutoff_9th = week_9th_cutoffs.get((row['year'], row['week']), -999)
+        # 9위 컷오프 점수보다 엄격히 높은(>) 상위 1~8위권 득표를 하고도 탈락한 곡만 '노래 아님'으로 판정!
+        # (-4점 등 9위 동점 탈락이나 12위 순위 밖 탈락곡은 cutoff 이하이므로 정상 인정됨)
+        if row['net_votes'] > cutoff_9th:
             return "노래 아님"
         return None
 
@@ -452,38 +441,40 @@ def get_user(pid):
 # 공식 순위/통계는 정상 반영곡만 사용
 df_valid_songs = df_all_songs[~df_all_songs['is_excluded']].copy()
 
-# 4. 주차별 환경 보정 및 평균 기준 종합 기여도 산출
-week_stats = df_valid_songs.groupby(['year', 'week'])['net_votes'].agg(['mean', 'std']).reset_index()
-week_stats.rename(columns={'mean': 'week_mean', 'std': 'week_std'}, inplace=True)
-df_valid_songs = pd.merge(df_valid_songs, week_stats, on=['year', 'week'], how='left')
-df_valid_songs['week_std'] = df_valid_songs['week_std'].fillna(0)
+# 4. 주차별 환경 보정 및 기여도 점수 산출 (최신 진행주차는 아직 승인 전이므로 기여도 계산에서는 중립 처리)
+completed_valid = df_valid_songs[~df_valid_songs['is_ongoing']].copy()
 
-df_valid_songs['z_week'] = np.where(
-    df_valid_songs['week_std'] > 0,
-    (df_valid_songs['net_votes'] - df_valid_songs['week_mean']) / df_valid_songs['week_std'],
+week_stats = completed_valid.groupby(['year', 'week'])['net_votes'].agg(['mean', 'std']).reset_index()
+week_stats.rename(columns={'mean': 'week_mean', 'std': 'week_std'}, inplace=True)
+completed_valid = pd.merge(completed_valid, week_stats, on=['year', 'week'], how='left')
+completed_valid['week_std'] = completed_valid['week_std'].fillna(0)
+
+completed_valid['z_week'] = np.where(
+    completed_valid['week_std'] > 0,
+    (completed_valid['net_votes'] - completed_valid['week_mean']) / completed_valid['week_std'],
     0.0
 )
 
 def norm_cdf(z):
     return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
 
-df_valid_songs['ev'] = 0.60 * (df_valid_songs['approved'] == True).astype(float) + 0.40 * df_valid_songs['z_week'].apply(norm_cdf)
-mean_ev = float(df_valid_songs['ev'].mean()) if len(df_valid_songs) > 0 else 0.0
-df_valid_songs['delta_ev'] = df_valid_songs['ev'] - mean_ev
+completed_valid['ev'] = 0.60 * (completed_valid['approved'] == True).astype(float) + 0.40 * completed_valid['z_week'].apply(norm_cdf)
+mean_ev = float(completed_valid['ev'].mean()) if len(completed_valid) > 0 else 0.0
+completed_valid['delta_ev'] = completed_valid['ev'] - mean_ev
 
-student_score_map = df_valid_songs.groupby('proposer')['delta_ev'].sum().round(2).to_dict()
+student_score_map = completed_valid.groupby('proposer')['delta_ev'].sum().round(2).to_dict()
 
-# 5. 1위 / 꼴등 횟수 계산
-top_weekly = df_valid_songs.sort_values(by=['year', 'week', 'net_votes'], ascending=[True, True, False]).groupby(['year', 'week']).first().reset_index()
+# 5. 1위 / 꼴등 횟수 계산 (마감된 주차만 대상)
+top_weekly = completed_valid.sort_values(by=['year', 'week', 'net_votes'], ascending=[True, True, False]).groupby(['year', 'week']).first().reset_index()
 first_cnt_df = top_weekly.groupby('proposer').size().reset_index(name='first_cnt').sort_values(by='first_cnt', ascending=False).reset_index(drop=True)
 
-bot_weekly = df_valid_songs.sort_values(by=['year', 'week', 'net_votes'], ascending=[True, True, True]).groupby(['year', 'week']).first().reset_index()
+bot_weekly = completed_valid.sort_values(by=['year', 'week', 'net_votes'], ascending=[True, True, True]).groupby(['year', 'week']).first().reset_index()
 last_cnt_df = bot_weekly.groupby('proposer').size().reset_index(name='last_cnt').sort_values(by='last_cnt', ascending=False).reset_index(drop=True)
 
 first_map = first_cnt_df.set_index('proposer')['first_cnt'].to_dict()
 last_map = last_cnt_df.set_index('proposer')['last_cnt'].to_dict()
 
-# 6. 전교생 기본 지표 집계
+# 6. 전교생 기본 지표 집계 (최신 주차의 좋아요/싫어요/순합산은 모두 포함)
 stat_records = []
 grouped = df_valid_songs.groupby('proposer')
 
@@ -535,7 +526,7 @@ app_df = df_valid_songs[df_valid_songs['approved'] == True].groupby('proposer').
 
 dislikes_df = df_valid_songs.groupby('proposer')['disagree'].sum().reset_index().sort_values(by='disagree', ascending=False).reset_index(drop=True)
 net_low_df = df_valid_songs.groupby('proposer')['net_votes'].sum().reset_index().sort_values(by='net_votes', ascending=True).reset_index(drop=True)
-rej_df = df_valid_songs[df_valid_songs['approved'] == False].groupby('proposer').size().reset_index(name='rej_cnt').sort_values(by='rej_cnt', ascending=False).reset_index(drop=True)
+rej_df = completed_valid[completed_valid['approved'] == False].groupby('proposer').size().reset_index(name='rej_cnt').sort_values(by='rej_cnt', ascending=False).reset_index(drop=True)
 
 # 8. 상단 카드 렌더링 함수
 def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
@@ -574,7 +565,7 @@ def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
         sub_items_html += (
             f"<div class='sub-item'>"
             f"<span class='sub-rank'>{rank_num}</span>"
-            f"<a href='/?student={pid}#player-section' target='_self' class='sub-user-link' title='{u_info['name']} 학생 정보 조회'>"
+            f"<a href='/?student={pid}' target='_top' class='sub-user-link' title='{u_info['name']} 학생 정보 조회'>"
             f"<img class='sub-avatar' src='{u_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/>"
             f"<span class='sub-name'>{u_info['name']}</span>"
             f"</a>"
@@ -587,7 +578,7 @@ def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
         f"<div class='card-title'>{title}</div>"
         f"<div class='hero-section'>"
         f"<div class='gold-badge'>1</div>"
-        f"<a href='/?student={top1_id}#player-section' target='_self' class='hero-link' title='{top1_info['name']} 학생 정보 조회'>"
+        f"<a href='/?student={top1_id}' target='_top' class='hero-link' title='{top1_info['name']} 학생 정보 조회'>"
         f"<img class='hero-avatar' src='{top1_info['pfp']}' onerror=\"this.src='{default_pfp}';\"/>"
         f"<div class='hero-name'>{top1_info['name']}</div>"
         f"</a>"
@@ -602,19 +593,14 @@ def render_leaderboard_card(title, df_rank, val_col, unit="", is_danger=False):
 st.sidebar.markdown("### ⚙️ 시스템 설정")
 with st.sidebar.expander("🔐 관리자 모드 (예외곡 복구)"):
     admin_pwd_input = st.text_input("관리자 비밀번호", type="password", key="admin_pwd")
-    # 기본 비번 sshs1234 (Streamlit Secrets에서 재정의 가능)
     CORRECT_PWD = st.secrets.get("ADMIN_PASSWORD", "sshs1234")
 
     if admin_pwd_input == CORRECT_PWD:
         st.success("✅ 관리자 인증 완료")
-        
-        # 현재 제외된 곡 목록 (진행중 제외, 화이트리스트 제외 대상)
         excluded_candidates = df_all_songs[df_all_songs['exclude_reason'].isin(['노래 아님', '방학'])].copy()
-        
         cur_whitelist = load_whitelist()
         st.markdown(f"**현재 복구된 곡:** `{len(cur_whitelist)}곡`")
         
-        # 선택 가능한 곡 사전 구성
         option_map = {}
         for _, r in excluded_candidates.iterrows():
             u = get_user(r['proposer'])
@@ -662,42 +648,12 @@ with tab_dishonor:
     with d4: render_leaderboard_card("🚫 최다 승인 탈락", rej_df, 'rej_cnt', '곡', is_danger=True)
 
 # -------------------------------------------------------------
-# 11. 🔍 선수(학생) 개별 기록 검색 및 상세 리포트 카드
+# 11. 🔍 학생 개인별 상세 기록 팝업 모달 (Dialog)
 # -------------------------------------------------------------
-st.markdown("<div id='player-section' class='section-header'>🔍 학생 개인별 상세 기록 조회</div>", unsafe_allow_html=True)
+dialog_func = st.dialog if hasattr(st, "dialog") else (st.experimental_dialog if hasattr(st, "experimental_dialog") else None)
 
-all_proposers = df_all_songs['proposer'].dropna().unique().astype(int)
-user_options = []
-user_id_map = {}
-user_id_to_label = {}
-
-for pid in all_proposers:
-    u = get_user(pid)
-    label = f"{u['name']} ({pid})"
-    user_options.append(label)
-    user_id_map[label] = pid
-    user_id_to_label[pid] = label
-
-user_options.sort()
-all_options = ["선택 안 함"] + user_options
-
-target_id = get_target_student_id()
-default_idx = 0
-if target_id and target_id in user_id_to_label:
-    lbl = user_id_to_label[target_id]
-    if lbl in all_options:
-        default_idx = all_options.index(lbl)
-
-selected_label = st.selectbox(
-    "이름 또는 교번을 검색하세요 (위 리더보드나 아래 순위표에서 이름을 클릭해도 바로 조회됩니다):",
-    options=all_options,
-    index=default_idx
-)
-
-if selected_label != "선택 안 함":
-    target_pid = user_id_map[selected_label]
+def render_student_profile_content(target_pid):
     target_u = get_user(target_pid)
-    
     user_all = df_all_songs[df_all_songs['proposer'] == target_pid].copy()
     user_valid = user_all[~user_all['is_excluded']].copy()
     user_excluded = user_all[user_all['is_excluded']].copy()
@@ -730,59 +686,56 @@ if selected_label != "선택 안 함":
     score_display_str = f"+{p_score:.2f}" if p_score > 0 else f"{p_score:.2f}"
 
     st.markdown(f"""
-    <div class="player-card">
-        <div class="player-header">
-            <img class="player-avatar" src="{target_u['pfp']}" onerror="this.src='{default_pfp}'"/>
-            <div class="player-title-box">
-                <h3>{target_u['name']} <span style="font-size: 14px; font-weight: normal; color: #64748b;">(교번: {target_pid})</span></h3>
-                <p>SSHS 기상곡 아티스트</p>
-            </div>
+    <div class="player-header">
+        <img class="player-avatar" src="{target_u['pfp']}" onerror="this.src='{default_pfp}'"/>
+        <div class="player-title-box">
+            <h3>{target_u['name']} <span style="font-size: 14px; font-weight: normal; color: #64748b;">(교번: {target_pid})</span></h3>
+            <p>SSHS 기상곡 아티스트</p>
         </div>
-        <div class="ranking-badge-bar">
-            <span>🏆 <b>공식 랭킹</b></span>
-            <span class="badge-bar-item">종합 점수 {r_score}</span> ·
-            <span class="badge-bar-item">순합산 {r_net}</span> ·
-            <span class="badge-bar-item">좋아요 {r_agree}</span> ·
-            <span class="badge-bar-item">선정 곡수 {r_app}</span>
+    </div>
+    <div class="ranking-badge-bar">
+        <span>🏆 <b>공식 랭킹</b></span>
+        <span class="badge-bar-item">종합 기여도 {r_score}</span> ·
+        <span class="badge-bar-item">순합산 {r_net}</span> ·
+        <span class="badge-bar-item">좋아요 {r_agree}</span> ·
+        <span class="badge-bar-item">선정 곡수 {r_app}</span>
+    </div>
+    <div class="stats-grid">
+        <div class="stats-cell">
+            <div class="stats-cell-label">종합 기여도 점수</div>
+            <div class="stats-cell-val highlight">{score_display_str}</div>
         </div>
-        <div class="stats-grid">
-            <div class="stats-cell">
-                <div class="stats-cell-label">종합 기여도 점수</div>
-                <div class="stats-cell-val highlight">{score_display_str}</div>
-            </div>
-            <div class="stats-cell">
-                <div class="stats-cell-label">순합산 (Net)</div>
-                <div class="stats-cell-val">{'+' + str(p_net) if p_net > 0 else p_net}점</div>
-            </div>
-            <div class="stats-cell">
-                <div class="stats-cell-label">승인율 (성공/등록)</div>
-                <div class="stats-cell-val">{p_rate}% <span style="font-size:13px; color:#64748b;">({p_approved}/{p_total_songs})</span></div>
-            </div>
-            <div class="stats-cell">
-                <div class="stats-cell-label">최종 승인 곡수</div>
-                <div class="stats-cell-val highlight">{p_approved}곡</div>
-            </div>
-            <div class="stats-cell">
-                <div class="stats-cell-label">합산 좋아요</div>
-                <div class="stats-cell-val">{p_agree}개</div>
-            </div>
-            <div class="stats-cell">
-                <div class="stats-cell-label">합산 싫어요</div>
-                <div class="stats-cell-val">{p_disagree}개</div>
-            </div>
-            <div class="stats-cell">
-                <div class="stats-cell-label">곡당 평균 Net</div>
-                <div class="stats-cell-val">{'+' + str(p_avg_net) if p_avg_net > 0 else p_avg_net}</div>
-            </div>
-            <div class="stats-cell">
-                <div class="stats-cell-label">곡당 평균 좋아요</div>
-                <div class="stats-cell-val">{p_avg_agree}</div>
-            </div>
+        <div class="stats-cell">
+            <div class="stats-cell-label">순합산 (Net)</div>
+            <div class="stats-cell-val">{'+' + str(p_net) if p_net > 0 else p_net}점</div>
+        </div>
+        <div class="stats-cell">
+            <div class="stats-cell-label">승인율 (성공/등록)</div>
+            <div class="stats-cell-val">{p_rate}% <span style="font-size:12px; color:#64748b;">({p_approved}/{p_total_songs})</span></div>
+        </div>
+        <div class="stats-cell">
+            <div class="stats-cell-label">최종 승인 곡수</div>
+            <div class="stats-cell-val highlight">{p_approved}곡</div>
+        </div>
+        <div class="stats-cell">
+            <div class="stats-cell-label">합산 좋아요</div>
+            <div class="stats-cell-val">{p_agree}개</div>
+        </div>
+        <div class="stats-cell">
+            <div class="stats-cell-label">합산 싫어요</div>
+            <div class="stats-cell-val">{p_disagree}개</div>
+        </div>
+        <div class="stats-cell">
+            <div class="stats-cell-label">곡당 평균 Net</div>
+            <div class="stats-cell-val">{'+' + str(p_avg_net) if p_avg_net > 0 else p_avg_net}</div>
+        </div>
+        <div class="stats-cell">
+            <div class="stats-cell-label">곡당 평균 좋아요</div>
+            <div class="stats-cell-val">{p_avg_agree}</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # 📈 주차별 유효 신청곡 득표 추이 그래프
     if len(user_valid) > 0:
         valid_sorted = user_valid.sort_values(by=['year', 'week'], ascending=[True, True]).copy()
         valid_sorted['주차'] = valid_sorted['year'].astype(str) + "년 " + valid_sorted['week'].astype(str) + "주"
@@ -794,176 +747,98 @@ if selected_label != "선택 안 함":
         st.caption("📈 주차별 유효 신청곡 득표 추이")
         st.line_chart(chart_data)
 
-    # 🎵 정상 반영된 신청 기상곡 목록
-    st.markdown(f"<div style='font-size: 16px; font-weight: 700; color: #1e293b; margin: 20px 0 8px 0;'>🎵 정상 반영된 신청곡 목록 ({len(user_valid)}곡)</div>", unsafe_allow_html=True)
-    
+    st.markdown(f"**🎵 정상 반영된 신청곡 목록 ({len(user_valid)}곡)**")
     if len(user_valid) > 0:
         valid_table = user_valid.sort_values(by=['year', 'week'], ascending=[False, False]).copy()
         valid_items = []
         for _, s in valid_table.iterrows():
+            badge_str = "⏳ 진행 중" if s.get('is_ongoing') else ("✅ 최종 승인" if s.get('approved') else "❌ 탈락")
             valid_items.append({
-                "week": f"{s['year']}년 {s['week']}주",
-                "title": str(s.get('title', '제목 없음')),
-                "net": int(s.get('net_votes', 0)),
-                "agree": int(s.get('agree', 0)),
-                "disagree": int(s.get('disagree', 0)),
-                "approved": bool(s.get('approved', False))
+                "주차": f"{s['year']}년 {s['week']}주",
+                "곡 제목": str(s.get('title', '제목 없음')),
+                "순합산": int(s.get('net_votes', 0)),
+                "좋아요": int(s.get('agree', 0)),
+                "싫어요": int(s.get('disagree', 0)),
+                "선정 결과": badge_str
             })
-        valid_items_json = json.dumps(valid_items)
-        v_height = min(360, max(160, 60 + len(valid_items) * 44))
-
-        st.components.v1.html(f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-        <style>
-            @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
-            * {{ box-sizing: border-box; font-family: 'Pretendard', sans-serif; }}
-            body {{ margin: 0; padding: 0; background: transparent; }}
-            .song-card {{ background: #fff; border-radius: 12px; border: 1px solid #e2e8f0; position: relative; }}
-            .top-scroll {{ position: sticky; top: 0; z-index: 50; overflow-x: auto; background: #f1f5f9; height: 10px; }}
-            .top-scroll::-webkit-scrollbar {{ height: 8px; }}
-            .top-scroll::-webkit-scrollbar-thumb {{ background: #3b82f6; border-radius: 4px; }}
-            .tbl-wrap {{ overflow-x: auto; max-height: 300px; overflow-y: auto; width: 100%; }}
-            table {{ width: 100%; border-collapse: collapse; font-size: 13.5px; white-space: nowrap; }}
-            th {{ position: sticky; top: 0; z-index: 40; background: #f8fafc; color: #64748b; font-weight: 700; padding: 10px 14px; border-bottom: 2px solid #e2e8f0; text-align: right; }}
-            th:first-child, th:nth-child(2) {{ text-align: left; }}
-            td {{ padding: 10px 14px; border-bottom: 1px solid #f1f5f9; color: #1e293b; text-align: right; }}
-            td:first-child, td:nth-child(2) {{ text-align: left; }}
-            tr:hover td {{ background-color: #f8fafc; }}
-            .badge-app {{ display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; background: #dcfce7; color: #166534; }}
-            .badge-rej {{ display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; background: #fee2e2; color: #991b1b; }}
-        </style>
-        </head>
-        <body>
-        <div class="song-card">
-            <div id="vTop" class="top-scroll"><div id="vTopInner" style="height:1px;"></div></div>
-            <div id="vBot" class="tbl-wrap">
-                <table id="vTable">
-                    <thead><tr><th>신청 주차</th><th>곡 제목</th><th>순합산 (Net)</th><th>좋아요</th><th>싫어요</th><th style="text-align:center;">선정 결과</th></tr></thead>
-                    <tbody id="vBody"></tbody>
-                </table>
-            </div>
-        </div>
-        <script>
-            const data = {valid_items_json};
-            const tbody = document.getElementById('vBody');
-            data.forEach(s => {{
-                const tr = document.createElement('tr');
-                const netStr = s.net > 0 ? '+' + s.net : s.net;
-                const badge = s.approved ? "<span class='badge-app'>✅ 최종 승인</span>" : "<span class='badge-rej'>❌ 탈락</span>";
-                tr.innerHTML = `<td>${{s.week}}</td><td style="font-weight:600;">${{s.title}}</td><td style="font-weight:700;color:#2563eb;">${{netStr}}</td><td>${{s.agree}}</td><td>${{s.disagree}}</td><td style="text-align:center;">${{badge}}</td>`;
-                tbody.appendChild(tr);
-            }});
-            const topEl = document.getElementById('vTop');
-            const botEl = document.getElementById('vBot');
-            const innerEl = document.getElementById('vTopInner');
-            const tbl = document.getElementById('vTable');
-            function sync() {{ innerEl.style.width = tbl.scrollWidth + 'px'; }}
-            setTimeout(sync, 40);
-            window.addEventListener('resize', sync);
-            let sTop = false, sBot = false;
-            topEl.addEventListener('scroll', () => {{ if(!sTop) {{ sBot = true; botEl.scrollLeft = topEl.scrollLeft; }} sTop = false; }});
-            botEl.addEventListener('scroll', () => {{ if(!sBot) {{ sTop = true; topEl.scrollLeft = botEl.scrollLeft; }} sBot = false; }});
-        </script>
-        </body>
-        </html>
-        """, height=v_height, scrolling=False)
+        st.dataframe(pd.DataFrame(valid_items), use_container_width=True, hide_index=True)
     else:
         st.info("정상 반영된 신청곡이 없습니다.")
 
-    # ⚠️ 통계에서 제외된 신청 기상곡 목록 (진행중 / 방학 / 노래 아님)
-    st.markdown(f"<div style='font-size: 16px; font-weight: 700; color: #dc2626; margin: 24px 0 8px 0;'>⚠️ 통계에서 제외된 신청곡 목록 ({len(user_excluded)}곡)</div>", unsafe_allow_html=True)
-    
+    st.markdown(f"**⚠️ 통계에서 제외된 신청곡 목록 ({len(user_excluded)}곡)**")
     if len(user_excluded) > 0:
         ex_table = user_excluded.sort_values(by=['year', 'week'], ascending=[False, False]).copy()
         ex_items = []
         for _, s in ex_table.iterrows():
             ex_items.append({
-                "week": f"{s['year']}년 {s['week']}주",
-                "title": str(s.get('title', '제목 없음')),
-                "net": int(s.get('net_votes', 0)),
-                "agree": int(s.get('agree', 0)),
-                "disagree": int(s.get('disagree', 0)),
-                "reason": str(s.get('exclude_reason', '기타 제외'))
+                "주차": f"{s['year']}년 {s['week']}주",
+                "곡 제목": str(s.get('title', '제목 없음')),
+                "순합산": int(s.get('net_votes', 0)),
+                "좋아요": int(s.get('agree', 0)),
+                "싫어요": int(s.get('disagree', 0)),
+                "제외 사유": str(s.get('exclude_reason', '기타 제외'))
             })
-        ex_items_json = json.dumps(ex_items)
-        e_height = min(320, max(150, 60 + len(ex_items) * 44))
-
-        st.components.v1.html(f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-        <style>
-            @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
-            * {{ box-sizing: border-box; font-family: 'Pretendard', sans-serif; }}
-            body {{ margin: 0; padding: 0; background: transparent; }}
-            .song-card {{ background: #fff; border-radius: 12px; border: 1px solid #fed7aa; position: relative; }}
-            .top-scroll {{ position: sticky; top: 0; z-index: 50; overflow-x: auto; background: #fff7ed; height: 10px; }}
-            .top-scroll::-webkit-scrollbar {{ height: 8px; }}
-            .top-scroll::-webkit-scrollbar-thumb {{ background: #f97316; border-radius: 4px; }}
-            .tbl-wrap {{ overflow-x: auto; max-height: 260px; overflow-y: auto; width: 100%; }}
-            table {{ width: 100%; border-collapse: collapse; font-size: 13.5px; white-space: nowrap; }}
-            th {{ position: sticky; top: 0; z-index: 40; background: #fff7ed; color: #9a3412; font-weight: 700; padding: 10px 14px; border-bottom: 2px solid #fed7aa; text-align: right; }}
-            th:first-child, th:nth-child(2) {{ text-align: left; }}
-            td {{ padding: 10px 14px; border-bottom: 1px solid #ffedd5; color: #1e293b; text-align: right; }}
-            td:first-child, td:nth-child(2) {{ text-align: left; }}
-            tr:hover td {{ background-color: #fffaf5; }}
-            .badge-meme {{ display: inline-block; padding: 3px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; background: #fee2e2; color: #b91c1c; }}
-            .badge-vac {{ display: inline-block; padding: 3px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; background: #e0f2fe; color: #0369a1; }}
-            .badge-ongoing {{ display: inline-block; padding: 3px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; background: #fef3c7; color: #92400e; }}
-        </style>
-        </head>
-        <body>
-        <div class="song-card">
-            <div id="eTop" class="top-scroll"><div id="eTopInner" style="height:1px;"></div></div>
-            <div id="eBot" class="tbl-wrap">
-                <table id="eTable">
-                    <thead><tr><th>신청 주차</th><th>곡 제목</th><th>순합산 (Net)</th><th>좋아요</th><th>싫어요</th><th style="text-align:center;">제외 사유</th></tr></thead>
-                    <tbody id="eBody"></tbody>
-                </table>
-            </div>
-        </div>
-        <script>
-            const data = {ex_items_json};
-            const tbody = document.getElementById('eBody');
-            data.forEach(s => {{
-                const tr = document.createElement('tr');
-                const netStr = s.net > 0 ? '+' + s.net : s.net;
-                let badge = "";
-                if (s.reason === '노래 아님') {{
-                    badge = "<span class='badge-meme'>🚫 노래 아님</span>";
-                }} else if (s.reason === '방학') {{
-                    badge = "<span class='badge-vac'>🏖️ 방학</span>";
-                }} else if (s.reason === '진행 중') {{
-                    badge = "<span class='badge-ongoing'>⏳ 진행 중</span>";
-                }} else {{
-                    badge = `<span class='badge-vac'>${{s.reason}}</span>`;
-                }}
-                tr.innerHTML = `<td>${{s.week}}</td><td style="font-weight:600; color:#475569;">${{s.title}}</td><td>${{netStr}}</td><td>${{s.agree}}</td><td>${{s.disagree}}</td><td style="text-align:center;">${{badge}}</td>`;
-                tbody.appendChild(tr);
-            }});
-            const topEl = document.getElementById('eTop');
-            const botEl = document.getElementById('eBot');
-            const innerEl = document.getElementById('eTopInner');
-            const tbl = document.getElementById('eTable');
-            function sync() {{ innerEl.style.width = tbl.scrollWidth + 'px'; }}
-            setTimeout(sync, 40);
-            window.addEventListener('resize', sync);
-            let sTop = false, sBot = false;
-            topEl.addEventListener('scroll', () => {{ if(!sTop) {{ sBot = true; botEl.scrollLeft = topEl.scrollLeft; }} sTop = false; }});
-            botEl.addEventListener('scroll', () => {{ if(!sBot) {{ sTop = true; topEl.scrollLeft = botEl.scrollLeft; }} sBot = false; }});
-        </script>
-        </body>
-        </html>
-        """, height=e_height, scrolling=False)
+        st.dataframe(pd.DataFrame(ex_items), use_container_width=True, hide_index=True)
     else:
-        st.success("통계에서 제외된 곡이 없습니다. (모든 신청곡이 정상 반영되었습니다)")
+        st.success("통계에서 제외된 곡이 없습니다. (모든 곡 정상 반영)")
+
+if dialog_func:
+    @dialog_func("🔍 학생 상세 기록실")
+    def student_profile_dialog(target_pid):
+        render_student_profile_content(target_pid)
+        if st.button("닫기", use_container_width=True):
+            st.rerun()
+
+all_proposers = df_all_songs['proposer'].dropna().unique().astype(int)
+user_options = []
+user_id_map = {}
+user_id_to_label = {}
+
+for pid in all_proposers:
+    u = get_user(pid)
+    label = f"{u['name']} ({pid})"
+    user_options.append(label)
+    user_id_map[label] = pid
+    user_id_to_label[pid] = label
+
+user_options.sort()
+
+# 빈칸 기본 검색창 (placeholder 탑재)
+st.markdown("<div class='section-header'>🔍 학생 검색</div>", unsafe_allow_html=True)
+selected_label = st.selectbox(
+    "이름 또는 교번을 검색하세요 (선택 시 팝업 창으로 상세 기록이 열립니다):",
+    options=user_options,
+    index=None,
+    placeholder="학생 이름 또는 교번을 입력하거나 선택하세요...",
+    key="student_search_box"
+)
+
+# 검색창 선택 시 모달 오픈
+if selected_label:
+    target_pid = user_id_map[selected_label]
+    if dialog_func:
+        student_profile_dialog(target_pid)
+    else:
+        with st.expander(f"📋 {selected_label} 상세 기록", expanded=True):
+            render_student_profile_content(target_pid)
+
+# URL 클릭으로 들어왔을 때 모달 오픈 및 쿼리 파라미터 안전 정리
+url_target_id = get_target_student_id()
+if url_target_id and url_target_id in user_id_to_label:
+    try:
+        st.query_params.clear()
+    except Exception:
+        pass
+    if dialog_func:
+        student_profile_dialog(url_target_id)
+    else:
+        with st.expander(f"📋 {user_id_to_label[url_target_id]} 상세 기록", expanded=True):
+            render_student_profile_content(url_target_id)
 
 # -------------------------------------------------------------
-# 12. 📊 전교생 종합 기록실 (이름 클릭 시 정보창 연동)
+# 12. 📊 전교생 종합 기록실 (이름 클릭 시 팝업 열림)
 # -------------------------------------------------------------
-st.markdown("<div class='section-header'>📋 전교생 종합 통계 기록실 <span style='font-size: 13px; font-weight: normal; color: #64748b;'>(※ 이름을 클릭하면 상단에서 상세 기록과 제외곡을 즉시 확인할 수 있습니다)</span></div>", unsafe_allow_html=True)
+st.markdown("<div class='section-header'>📋 전교생 종합 통계 기록실 <span style='font-size: 13px; font-weight: normal; color: #64748b;'>(※ 이름을 클릭하면 팝업으로 상세 기록과 제외곡을 즉시 확인할 수 있습니다)</span></div>", unsafe_allow_html=True)
 
 table_data_json = json.dumps(df_base_stat.to_dict(orient='records'))
 
@@ -1090,7 +965,7 @@ html_table_component = f"""
             tr.innerHTML = `
                 <td class="${{rankClass}}">${{rankDisplay}}</td>
                 <td>
-                    <a href="/?student=${{row.student_id}}#player-section" target="_top" class="col-user-link" title="${{row.name}} 학생 정보 조회">
+                    <a href="/?student=${{row.student_id}}" target="_top" class="col-user-link" title="${{row.name}} 학생 정보 조회">
                         <img class="avatar" src="${{row.pfp}}" onerror="this.src='{default_pfp}'"/>
                         <span class="user-name">${{row.name}}</span>
                     </a>
